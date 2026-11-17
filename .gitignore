@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Generated build output (never commit kernels, tarballs or packages)
+build/
+out/
+*.tar.*
+*.pkg.tar.*
+*.iso
+*.img
+
+# Downloaded upstream source
+upstream/src/
+
+# Secrets: signing keys must never be committed
+*.pem
+*.key
+*.p12
+signing_key.*
+
+# Logs and editor files
+*.log
+*.tmp
+.cache/
+.DS_Store
+.idea/
+.vscode/
+*.swp
