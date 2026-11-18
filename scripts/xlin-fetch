@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Xlin Fetch: retrieve the exact upstream source named by upstream/UPSTREAM.lock.
+#
+# It fetches the pinned release TAG (never a moving branch), checks that the tag
+# and its commit are exactly the pinned hashes, then checks the commit out into
+# an ignored directory (default: upstream/src/linux). It never touches files it
+# did not create, and it is safe to run repeatedly.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/xlin-lock.sh
+. "$ROOT/scripts/lib/xlin-lock.sh"
+
+usage() {
+	cat <<'USAGE'
+Usage: scripts/xlin-fetch [options]
+
+Retrieve the upstream source pinned in upstream/UPSTREAM.lock.
+
+Options:
+  --lock FILE        lock file to use (default: upstream/UPSTREAM.lock)
+  --dest DIR         parent directory for the source (default: upstream/src);
+                     the source goes into DIR/linux
+  --source WHERE     official | mirror | auto (default: auto = official first,
+                     the mirror only if the official repository cannot be reached)
+  --no-checkout      fetch the objects only, do not create a working tree
+  -h, --help         show this help
+
+Exit status: 0 on success, non-zero on any failure. A source that does not match
+the pinned hashes is never accepted and never falls back to another server.
+USAGE
+}
+
+lock="$ROOT/upstream/UPSTREAM.lock"
+dest="$ROOT/upstream/src"
+choice=auto
+checkout=1
+while [ $# -gt 0 ]; do
+	case $1 in
+	--lock) [ $# -ge 2 ] || xlin_die "--lock needs a value"; lock=$2; shift 2 ;;
+	--dest) [ $# -ge 2 ] || xlin_die "--dest needs a value"; dest=$2; shift 2 ;;
+	--source) [ $# -ge 2 ] || xlin_die "--source needs a value"; choice=$2; shift 2 ;;
+	--no-checkout) checkout=0; shift ;;
+	-h | --help) usage; exit 0 ;;
+	*) usage >&2; xlin_die "unknown option: $1" ;;
+	esac
+done
+case $choice in official | mirror | auto) ;; *) xlin_die "--source must be official, mirror or auto" ;; esac
+command -v git >/dev/null || xlin_die "git is required"
+
+export GIT_TERMINAL_PROMPT=0
+xlin_lock_load "$lock"
+tag=${LOCK[source.tag]}
+want_obj=${LOCK[source.tag_object]}
+want_commit=${LOCK[source.commit]}
+official=${LOCK[source.repository.official]}
+mirror=${LOCK[source.repository.mirror]}
+
+repo="$dest/linux"
+marker="$repo/.git/xlin-source-pin"
+
+echo "Xlin Fetch: ${LOCK[source.project]} ${LOCK[source.version]} (tag $tag)"
+echo "  pinned commit: $want_commit"
+
+# Never touch a directory we did not create.
+if [ -e "$repo" ]; then
+	[ -f "$marker" ] || xlin_die "$repo exists but was not created by Xlin Fetch; refusing to modify it. Move it away or use --dest."
+fi
+
+# Already up to date? (idempotent fast path)
+if [ -f "$marker" ] &&
+	[ "$(git -C "$repo" rev-parse -q --verify "refs/tags/$tag" 2>/dev/null || true)" = "$want_obj" ] &&
+	[ "$(git -C "$repo" rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null || true)" = "$want_commit" ]; then
+	if [ "$checkout" -eq 0 ] || [ "$(git -C "$repo" rev-parse -q --verify HEAD 2>/dev/null || true)" = "$want_commit" ]; then
+		echo "Already fetched: $repo is at the pinned commit. Nothing to do."
+		exit 0
+	fi
+fi
+
+if [ ! -e "$repo" ]; then
+	mkdir -p "$dest" || xlin_die "cannot create $dest"
+	git init -q "$repo" || xlin_die "cannot initialise $repo"
+	printf 'pending=1\n' >"$marker"
+fi
+
+try_fetch() { # URL: up to 3 attempts; returns non-zero if the server cannot be used
+	local url=$1 attempt
+	for attempt in 1 2 3; do
+		if git -C "$repo" -c transfer.fsckObjects=true fetch --quiet --depth 1 --no-tags \
+			--no-recurse-submodules "$url" "+refs/tags/$tag:refs/tags/$tag"; then
+			return 0
+		fi
+		echo "  attempt $attempt/3 failed for $url" >&2
+		[ "$attempt" -lt 3 ] && sleep $((attempt * 5))
+	done
+	return 1
+}
+
+used=""
+case $choice in
+official) urls=("$official") ;;
+mirror) urls=("$mirror") ;;
+auto) urls=("$official" "$mirror") ;;
+esac
+for url in "${urls[@]}"; do
+	echo "  fetching tag $tag from $url"
+	if try_fetch "$url"; then
+		used=$url
+		break
+	fi
+	echo "  warning: could not retrieve from $url" >&2
+done
+[ -n "$used" ] || xlin_die "could not retrieve $tag from any server (network problem?). Nothing was accepted."
+
+# The fetched tag must be exactly the pinned object and commit. No fallback on mismatch.
+got_obj=$(git -C "$repo" rev-parse -q --verify "refs/tags/$tag" || true)
+got_commit=$(git -C "$repo" rev-parse -q --verify "refs/tags/$tag^{commit}" || true)
+if [ "$got_obj" != "$want_obj" ] || [ "$got_commit" != "$want_commit" ]; then
+	git -C "$repo" update-ref -d "refs/tags/$tag" 2>/dev/null || true
+	xlin_die "SOURCE MISMATCH from $used:
+  tag object: got ${got_obj:-none}, pinned $want_obj
+  commit:     got ${got_commit:-none}, pinned $want_commit
+The retrieved source is NOT the pinned release and was rejected."
+fi
+
+if [ "$checkout" -eq 1 ]; then
+	echo "  checking out $want_commit"
+	git -C "$repo" -c advice.detachedHead=false checkout -q --detach "$want_commit" ||
+		xlin_die "checkout failed (local changes in $repo?)"
+fi
+
+{
+	echo "commit=$want_commit"
+	echo "tag=$tag"
+	echo "source=$used"
+	echo "fetched_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} >"$marker"
+
+echo "Done: $repo"
+echo "Run scripts/xlin-verify to verify it."

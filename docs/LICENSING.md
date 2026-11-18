@@ -1,48 +1,51 @@
 <!--
 SPDX-FileCopyrightText: 2026 Axion Co.
-SPDX-License-Identifier: GPL-3.0-or-later
+SPDX-License-Identifier: CC-BY-4.0
 -->
 
 # Licensing
 
-**Status: draft policy. The per-category choices below are proposals awaiting approval by Axion Co. This file is not legal advice.**
+This file describes how Xlin is licensed. It is not legal advice. **Licences are chosen file by file** according to what each file is, who owns it and what it depends on. No single licence is applied to everything.
 
-## Principles
+## Policy
 
-1. **Upstream notices are never removed.** Every copyright notice, licence text and SPDX identifier in Linux source, in patches that modify it and in files copied from other projects stays as it is.
-2. **One licence per file, chosen by ownership and derivation.** No single licence is applied to everything. A file's licence is the SPDX identifier in its first lines.
-3. **Axion Co. is named as copyright holder only for files it owns.** For changes to upstream files, the existing copyright holders keep their notices.
-4. **Only licences that are actually used are included** in `LICENSES/`, as verbatim texts.
-5. **Compatibility.** GPL-2.0-only and GPL-3.0-or-later code cannot be combined into one work. Files under the two licences must therefore stay separate programs or separate files that do not copy each other's code.
+| Kind of file | Licence |
+|---|---|
+| Original software (scripts, tests, workflow files, configuration written by Axion Co.) | Chosen individually by purpose and dependencies. Currently `GPL-3.0-or-later` for the scripts, tests, workflow and the lock file that configures them |
+| Kernel-derived files and patches (none exist yet) | The applicable Linux kernel licence is preserved: `GPL-2.0-only`, with the `Linux-syscall-note` exception for user-space API headers, exactly as the files being modified state |
+| Original documentation | `CC-BY-4.0` |
+| Third-party material | Keeps its original licence and notices |
 
-## The Linux kernel
+Axion Co. is named as copyright holder only for files it owns. Nothing in this repository relicenses upstream code or documentation.
 
-The kernel is `GPL-2.0-only WITH Linux-syscall-note` (user-space API headers) and `GPL-2.0-only` otherwise, with some files under other compatible licences. Xlin does not copy kernel source into this repository; it records which upstream release is used and how it is fetched and verified.
+## Upstream Linux source
 
-## Proposed licences by category
+Xlin does not store the Linux source. `scripts/xlin-fetch` retrieves it, unmodified, into an ignored directory. It stays under its own terms: the fetched tree states "`GPL-2.0 WITH Linux-syscall-note`" in its `COPYING` file, ships its licence texts under `LICENSES/`, and keeps every copyright notice, `CREDITS` and `MAINTAINERS` entry. Those notices must be preserved in anything Xlin builds or distributes from it.
 
-| Category | Proposed licence | Reason |
+Linux(R) is the registered trademark of Linus Torvalds. Xlin is an independent downstream project and is not affiliated with or endorsed by him, the Linux Foundation or the kernel maintainers. "Linux" is used only to name the source project.
+
+## GPL-2.0-only and GPL-3.0-or-later
+
+These two licences cannot be combined in a single work. Xlin keeps them apart: the scripts under `GPL-3.0-or-later` only run Git, GnuPG and (later) the kernel build tools as separate programs and contain no kernel code. Anything derived from kernel source will be `GPL-2.0-only` and will be kept in separate files.
+
+## Files in this repository
+
+| Files | Licence | Why |
 |---|---|---|
-| Patches to the Linux kernel (none exist yet) | `GPL-2.0-only` (headers and UAPI files keep their upstream identifiers) | A patch to a GPL-2.0-only file is a derivative work and must use the same licence |
-| Kernel config fragments | `GPL-2.0-only` | They consist of Kconfig option names defined by the kernel; the origin of any baseline config will be recorded |
-| Build, fetch, verify and test scripts | `GPL-3.0-or-later` | Independently authored programs that only run kernel build tools as separate processes |
-| Packaging files (`PKGBUILD`, hooks) | `GPL-3.0-or-later` | Authored by Axion Co. |
-| Documentation | `GPL-3.0-or-later` (provisional; `CC-BY-4.0` is an alternative) | Decision pending |
+| `scripts/xlin-fetch`, `scripts/xlin-verify`, `scripts/lib/xlin-lock.sh`, `tests/negative.sh` | `GPL-3.0-or-later` | Independently written tooling |
+| `.github/workflows/source-verification.yml`, `.gitignore` | `GPL-3.0-or-later` | Repository tooling and configuration |
+| `upstream/UPSTREAM.lock` | `GPL-3.0-or-later` | Configuration read by the GPL-3.0-or-later scripts |
+| `README.md`, `CHANGELOG.md`, `docs/*.md` | `CC-BY-4.0` | Original documentation |
+| `LICENSES/GPL-3.0-or-later.txt` | GNU GPL version 3 | Verbatim licence text (copy shipped with Debian/Ubuntu `base-files`) |
+| `LICENSES/CC-BY-4.0.txt` | Creative Commons Attribution 4.0 International | Verbatim licence text from the SPDX License List data (<https://github.com/spdx/license-list-data>) |
 
-## Open points
-
-- Confirm the documentation licence.
-- Review the config-fragment and patch licences with legal counsel before the first release.
-- When the first kernel-derived file is added, add `LICENSES/GPL-2.0-only.txt` and, if needed, `LICENSES/Linux-syscall-note.txt`.
-- Decide whether to adopt the REUSE specification to check SPDX headers in CI.
+Each file states its licence in an SPDX identifier in its first lines. `LICENSES/` contains only licences that files in this repository actually use. When the first kernel-derived file is added, `LICENSES/GPL-2.0-only.txt` (and the `Linux-syscall-note` text, if needed) will be added with it. There is deliberately no single top-level `LICENSE` file, because it would wrongly suggest one licence for everything.
 
 ## Third-party material
 
-Any third-party file added later is listed here with its origin, version, licence and the changes made.
+Any third-party file added later is listed here with its origin, version, licence and the changes made, and keeps its original notices.
 
-## Currently in the repository
+## Open points
 
-| File | Licence |
-|---|---|
-| `README.md`, `CHANGELOG.md`, `docs/LICENSING.md`, `.gitignore` | GPL-3.0-or-later (SPDX header in each file) |
-| `LICENSES/GPL-3.0-or-later.txt` | Verbatim GNU GPL version 3 text from the Debian `base-files` copy |
+- Legal review of the licence choices before the first release.
+- Whether to check SPDX headers automatically in CI (for example with the REUSE tool).

@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Xlin Source Pin: the exact upstream source that Xlin Kernel is built from.
+# Read by scripts/xlin-fetch and scripts/xlin-verify (strict parser: lines are
+# "key=value", "#" comments and blank lines only; unknown keys are rejected).
+# Change this file only through a reviewed pull request (docs/SOURCE-MANAGEMENT.md).
+format=xlin-source-pin/1
+
+# --- Xlin identity -----------------------------------------------------------
+xlin.component=Xlin Kernel
+pin.established=2026-11-18
+
+# --- Source project: the Linux kernel (stable tree, longterm series) ---------
+source.project=Linux kernel
+source.series=6.18 (longterm)
+source.version=6.18.64
+source.tag=v6.18.64
+source.tag_object=084d543c1adb9b29550aae1cce61378982f94d1d
+source.commit=fd7cfd39c88596fec816639ad83cbf3e9d316372
+source.makefile_extraversion=
+source.repository.official=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+source.repository.mirror=https://github.com/gregkh/linux.git
+
+# --- Authenticity: how the signed release tag is checked ---------------------
+verify.method=signed-tag
+verify.signer.name=Greg Kroah-Hartman
+verify.signer.fingerprint=647F28654894E3BD457199BE38DBBDC86092693E
+verify.signer.key_locator=wkd:gregkh@kernel.org
+verify.signer.fingerprint_reference=https://www.kernel.org/signature.html
+
+# --- Observed when the pin was established (informational, not enforced) -----
+observed.tag_exists=yes: annotated tag v6.18.64 on the mirror, 2026-11-17 and 2026-11-18
+observed.commit_matches_tag=yes: tag peels to the commit above
+observed.makefile_version=6.18.64 with empty EXTRAVERSION, read from the pinned commit
+observed.tag_signature_issuer=647F28654894E3BD457199BE38DBBDC86092693E, read from the tag's signature packet; equals the fingerprint kernel.org lists for Greg Kroah-Hartman
+observed.maintenance=listed by kernel.org as the latest longterm 6.18 release (2026-11-17); series projected end of life Dec 2028
+observed.signature_cryptographic=not performed when pinning (the authoring environment cannot reach the key service); performed by xlin-verify in CI
+observed.official_repository_crosscheck=not performed when pinning (git.kernel.org unreachable from the authoring environment); performed by xlin-verify in CI
+observed.ci_verification=xlin-verify --strict passed all 8 checks in GitHub Actions run 44307150984 on 2026-11-18: source fetched from the official repository, official cross-check agreed, tag signature valid for the pinned key
+
+# --- Notes -------------------------------------------------------------------
+note.source=Source is the unmodified upstream Linux kernel; Xlin changes live outside this tree.
+note.mirror=The mirror is a convenience fallback; identity is always checked against the pinned hashes.

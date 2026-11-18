@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Fetches the REAL pinned upstream source (upstream/UPSTREAM.lock) and verifies it.
+# Nothing is mocked: a failure to retrieve or verify the source fails the job.
+name: Source verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out Xlin
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Tool versions
+        run: |
+          git --version
+          gpg --version | head -n1
+          shellcheck --version | sed -n 2p
+
+      - name: Static checks (syntax and shellcheck)
+        run: |
+          set -eu
+          files="scripts/xlin-fetch scripts/xlin-verify scripts/lib/xlin-lock.sh tests/negative.sh"
+          for f in $files; do bash -n "$f"; done
+          # shellcheck disable=SC2086
+          shellcheck -x $files
+
+      - name: Xlin Fetch (pinned source)
+        run: ./scripts/xlin-fetch
+
+      - name: Xlin Verify (strict)
+        run: |
+          set -o pipefail
+          ./scripts/xlin-verify --strict | tee verify.log
+          { echo '### Xlin Verify'; echo '```'; cat verify.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Negative tests (bad pins and bad input must be rejected)
+        env:
+          XLIN_TEST_NETWORK: "1"
+        run: ./tests/negative.sh
+
+      - name: Confirm no downloaded source or generated files are tracked
+        run: |
+          set -eu
+          if git ls-files | grep -q '^upstream/src/'; then echo "downloaded source is tracked" >&2; exit 1; fi
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then git status --short >&2; echo "tracked files changed" >&2; exit 1; fi
+          du -sh upstream/src/linux
