@@ -23,7 +23,9 @@ xlin_lock_require() {
 # xlin_lock_load FILE: parse and validate FILE into the LOCK array.
 xlin_lock_load() {
 	local file=$1 line key value n=0 k
-	[ -f "$file" ] && [ -r "$file" ] || xlin_die "lock file not readable: $file"
+	if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+		xlin_die "lock file not readable: $file"
+	fi
 	LOCK=()
 	while IFS= read -r line || [ -n "$line" ]; do
 		n=$((n + 1))
