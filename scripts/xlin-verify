@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Xlin Verify: check that the fetched source is exactly the source pinned in
+# upstream/UPSTREAM.lock, and report separately what is proven about it.
+#
+# Two different things are checked and never confused:
+#   * SOURCE IDENTITY: "this tree is exactly commit X, the commit of release Y".
+#     A matching Git commit hash proves identity (the hash covers the content),
+#     but not WHO published it.
+#   * AUTHENTICATED PROVENANCE: "the release tag was signed by the pinned
+#     maintainer key". Only a valid cryptographic signature from that key proves
+#     this. A matching hash alone never does.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/xlin-lock.sh
+. "$ROOT/scripts/lib/xlin-lock.sh"
+
+usage() {
+	cat <<'USAGE'
+Usage: scripts/xlin-verify [options]
+
+Verify the source retrieved by scripts/xlin-fetch against upstream/UPSTREAM.lock.
+
+Options:
+  --lock FILE        lock file to use (default: upstream/UPSTREAM.lock)
+  --dest DIR         parent directory used with xlin-fetch (default: upstream/src)
+  --keyfile FILE     import the signer's public key from FILE instead of looking
+                     it up with Web Key Directory (its fingerprint must still
+                     equal the pinned one)
+  --strict           treat a skipped check as a failure (use this in CI)
+  -h, --help         show this help
+
+Exit status: 0 = no check failed (and, with --strict, none skipped);
+             1 = at least one check FAILED; 2 = --strict and a check was skipped.
+USAGE
+}
+
+lock="$ROOT/upstream/UPSTREAM.lock"
+dest="$ROOT/upstream/src"
+keyfile=""
+strict=0
+while [ $# -gt 0 ]; do
+	case $1 in
+	--lock) [ $# -ge 2 ] || xlin_die "--lock needs a value"; lock=$2; shift 2 ;;
+	--dest) [ $# -ge 2 ] || xlin_die "--dest needs a value"; dest=$2; shift 2 ;;
+	--keyfile) [ $# -ge 2 ] || xlin_die "--keyfile needs a value"; keyfile=$2; shift 2 ;;
+	--strict) strict=1; shift ;;
+	-h | --help) usage; exit 0 ;;
+	*) usage >&2; xlin_die "unknown option: $1" ;;
+	esac
+done
+command -v git >/dev/null || xlin_die "git is required"
+export GIT_TERMINAL_PROMPT=0
+
+n_pass=0 n_fail=0 n_skip=0
+declare -A STATE=()
+report() { # STATUS NAME MESSAGE
+	local status=$1 name=$2 msg=$3
+	STATE[$name]=$status
+	case $status in
+	PASS) n_pass=$((n_pass + 1)) ;;
+	FAIL) n_fail=$((n_fail + 1)) ;;
+	SKIP) n_skip=$((n_skip + 1)) ;;
+	esac
+	printf '[%s] %-9s %s\n' "$status" "$name" "$msg"
+}
+
+# 1. LOCK: the lock file itself must be valid (xlin_lock_load exits on error).
+xlin_lock_load "$lock"
+tag=${LOCK[source.tag]}
+want_obj=${LOCK[source.tag_object]}
+want_commit=${LOCK[source.commit]}
+official=${LOCK[source.repository.official]}
+signer=${LOCK[verify.signer.fingerprint]}
+locator=${LOCK[verify.signer.key_locator]}
+
+echo "Xlin Verify: ${LOCK[source.project]} ${LOCK[source.version]} (tag $tag)"
+echo "  pinned commit:      $want_commit"
+echo "  pinned tag object:  $want_obj"
+echo "  pinned signer key:  $signer (${LOCK[verify.signer.name]})"
+echo
+report PASS LOCK "lock file is valid (format ${LOCK[format]})"
+
+repo="$dest/linux"
+marker="$repo/.git/xlin-source-pin"
+src_ok=0
+
+# 2. SOURCE: the fetched source must exist and have been created by Xlin Fetch.
+if [ -d "$repo/.git" ] && [ -f "$marker" ]; then
+	report PASS SOURCE "found $repo ($(grep '^source=' "$marker" | cut -d= -f2- || true))"
+	src_ok=1
+else
+	report FAIL SOURCE "no fetched source at $repo; run scripts/xlin-fetch first"
+fi
+
+if [ "$src_ok" -eq 1 ]; then
+	g() { git -C "$repo" "$@"; }
+
+	# 3. COMMIT: the checked-out commit is exactly the pinned full hash.
+	head=$(g rev-parse -q --verify HEAD 2>/dev/null || true)
+	if [ "$head" = "$want_commit" ]; then
+		report PASS COMMIT "HEAD is exactly $want_commit"
+	elif [ -z "$head" ]; then
+		report FAIL COMMIT "no checked-out commit (fetched with --no-checkout?)"
+	else
+		report FAIL COMMIT "HEAD is $head, pinned commit is $want_commit"
+	fi
+
+	# 4. TREE: tracked files match the commit (nothing modified after checkout).
+	if [ "$head" = "$want_commit" ]; then
+		if g diff --quiet HEAD -- 2>/dev/null; then
+			report PASS TREE "working tree matches the commit (no modified tracked files)"
+		else
+			report FAIL TREE "tracked files differ from the pinned commit"
+		fi
+	else
+		report FAIL TREE "not checked: HEAD is not the pinned commit"
+	fi
+
+	# 5. TAG: the release tag is the pinned object and peels to the pinned commit.
+	got_obj=$(g rev-parse -q --verify "refs/tags/$tag" 2>/dev/null || true)
+	got_commit=$(g rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null || true)
+	if [ "$got_obj" = "$want_obj" ] && [ "$got_commit" = "$want_commit" ]; then
+		report PASS TAG "tag $tag is object $want_obj and points to the pinned commit"
+	else
+		report FAIL TAG "tag $tag: object ${got_obj:-missing} commit ${got_commit:-missing}; pinned $want_obj / $want_commit"
+	fi
+
+	# 6. VERSION: the Makefile of the pinned commit names the pinned release.
+	mk=$(g show "$want_commit:Makefile" 2>/dev/null || true)
+	mk_field() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" <<<"$mk" | head -n1 | sed 's/[[:space:]]*$//'; }
+	got_ver="$(mk_field VERSION).$(mk_field PATCHLEVEL).$(mk_field SUBLEVEL)"
+	got_extra=$(mk_field EXTRAVERSION)
+	if [ -n "$mk" ] && [ "$got_ver" = "${LOCK[source.version]}" ] && [ "$got_extra" = "${LOCK[source.makefile_extraversion]}" ]; then
+		report PASS VERSION "Makefile says $got_ver${got_extra:+ EXTRAVERSION=$got_extra}"
+	else
+		report FAIL VERSION "Makefile says '${got_ver}' EXTRAVERSION='${got_extra}', pinned ${LOCK[source.version]}"
+	fi
+
+	# 7. OFFICIAL: independent cross-check against the official repository.
+	if ls=$(timeout 90 git ls-remote "$official" "refs/tags/$tag" "refs/tags/$tag^{}" 2>&1); then
+		o_obj=$(awk -v r="refs/tags/$tag" '$2 == r {print $1}' <<<"$ls")
+		o_com=$(awk -v r="refs/tags/$tag^{}" '$2 == r {print $1}' <<<"$ls")
+		if [ "$o_obj" = "$want_obj" ] && [ "$o_com" = "$want_commit" ]; then
+			report PASS OFFICIAL "official repository agrees: $tag -> $want_commit"
+		else
+			report FAIL OFFICIAL "official repository says tag ${o_obj:-none} commit ${o_com:-none}; pinned $want_obj / $want_commit"
+		fi
+	else
+		report SKIP OFFICIAL "cannot reach $official: $(tail -n1 <<<"$ls")"
+	fi
+
+	# 8. SIGNATURE: the release tag carries a valid signature by the pinned key.
+	sig_reason=""
+	if ! command -v gpg >/dev/null; then
+		sig_reason="gpg is not installed"
+	else
+		gh=$(mktemp -d) && chmod 700 "$gh"
+		export GNUPGHOME=$gh
+		trap 'rm -rf "$gh"' EXIT
+		got_key=0
+		if [ -n "$keyfile" ]; then
+			[ -r "$keyfile" ] || xlin_die "cannot read --keyfile $keyfile"
+			gpg --batch --quiet --import "$keyfile" 2>/dev/null && got_key=1
+			[ "$got_key" -eq 1 ] || sig_reason="could not import $keyfile"
+		else
+			email=${locator#wkd:}
+			if gpg --batch --quiet --auto-key-locate clear,wkd --locate-keys "$email" >/dev/null 2>&1; then
+				got_key=1
+			else
+				sig_reason="could not obtain the signer key via Web Key Directory for $email"
+			fi
+		fi
+		if [ "$got_key" -eq 1 ]; then
+			if gpg --batch --with-colons --fingerprint 2>/dev/null |
+				awk -F: '$1 == "pub" {p = 1; next} $1 == "fpr" && p {print $10; p = 0}' | grep -qx "$signer"; then
+				status=$(g verify-tag --raw "refs/tags/$tag" 2>&1 || true)
+				primary=$(awk '$2 == "VALIDSIG" {print $NF}' <<<"$status" | head -n1)
+				if grep -qE '\] (BADSIG|ERRSIG|EXPSIG|EXPKEYSIG|REVKEYSIG) ' <<<"$status"; then
+					report FAIL SIGNATURE "signature is bad, expired or made with a revoked key"
+				elif grep -q '\] GOODSIG ' <<<"$status" && [ "$primary" = "$signer" ]; then
+					report PASS SIGNATURE "tag $tag has a valid signature by key $signer"
+				else
+					report FAIL SIGNATURE "no valid signature by $signer on tag $tag (signing key: ${primary:-none})"
+				fi
+				sig_reason="done"
+			else
+				report FAIL SIGNATURE "the key obtained for ${locator#wkd:} does not have the pinned fingerprint $signer"
+				sig_reason="done"
+			fi
+		fi
+	fi
+	[ "$sig_reason" = "done" ] || report SKIP SIGNATURE "$sig_reason"
+fi
+
+echo
+echo "---------------------------------------------------------------"
+identity=VERIFIED
+for c in LOCK SOURCE COMMIT TREE TAG VERSION; do
+	[ "${STATE[$c]:-FAIL}" = "PASS" ] || identity=NOT-VERIFIED
+done
+echo "Source identity ....... $identity (is this exactly the pinned commit and release?)"
+echo "Official cross-check .. ${STATE[OFFICIAL]:-not run}"
+if [ "${STATE[SIGNATURE]:-}" = "PASS" ]; then
+	echo "Authenticated provenance: ESTABLISHED (release tag signed by the pinned key)"
+else
+	echo "Authenticated provenance: NOT ESTABLISHED (${STATE[SIGNATURE]:-not run})"
+	echo "  A matching hash proves identity only; it does not prove who published the source."
+fi
+echo "Checks: $n_pass passed, $n_fail failed, $n_skip skipped"
+
+if [ "$n_fail" -gt 0 ]; then
+	echo "RESULT: FAILED"
+	exit 1
+fi
+if [ "$n_skip" -gt 0 ] && [ "$strict" -eq 1 ]; then
+	echo "RESULT: FAILED (--strict: $n_skip check(s) skipped)"
+	exit 2
+fi
+echo "RESULT: OK"
