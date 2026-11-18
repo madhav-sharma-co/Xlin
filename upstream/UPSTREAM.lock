@@ -37,6 +37,7 @@ observed.tag_signature_issuer=647F28654894E3BD457199BE38DBBDC86092693E, read fro
 observed.maintenance=listed by kernel.org as the latest longterm 6.18 release (2026-11-17); series projected end of life Dec 2028
 observed.signature_cryptographic=not performed when pinning (the authoring environment cannot reach the key service); performed by xlin-verify in CI
 observed.official_repository_crosscheck=not performed when pinning (git.kernel.org unreachable from the authoring environment); performed by xlin-verify in CI
+observed.ci_verification=xlin-verify --strict passed all 8 checks in GitHub Actions run 44307150984 on 2026-11-18: source fetched from the official repository, official cross-check agreed, tag signature valid for the pinned key
 
 # --- Notes -------------------------------------------------------------------
 note.source=Source is the unmodified upstream Linux kernel; Xlin changes live outside this tree.

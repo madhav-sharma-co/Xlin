@@ -38,6 +38,8 @@ The authoring environment could not reach `git.kernel.org` or kernel.org's key s
 - cross-checking the tag against the official repository;
 - cryptographic verification of the tag signature.
 
+**Result:** in GitHub Actions run 44307150984 (2026-11-18, `xlin-verify --strict`), the source was fetched from the official repository, the official cross-check agreed, and the tag signature was valid for the pinned key: 8 of 8 checks passed. That run is a point-in-time result; CI repeats the verification on every change.
+
 ## Commands
 
     scripts/xlin-fetch                 # retrieve the pinned source into upstream/src/linux
