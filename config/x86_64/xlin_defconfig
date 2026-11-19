@@ -94,6 +94,10 @@ CONFIG_TIGON3=y
 # ---- Console and graphics (terminal-only baseline) --------------------------------
 CONFIG_VT=y
 CONFIG_VT_CONSOLE=y
+# The upstream defconfig has no framebuffer (FB), so a UEFI graphical screen would stay
+# blank: the text console needs FB + DRM fbdev emulation + the framebuffer console.
+CONFIG_FB=y
+CONFIG_DRM_FBDEV_EMULATION=y
 CONFIG_FRAMEBUFFER_CONSOLE=y
 CONFIG_SERIAL_8250=y
 CONFIG_SERIAL_8250_CONSOLE=y
@@ -141,7 +145,7 @@ CONFIG_SECCOMP_FILTER=y
 CONFIG_BPF_SYSCALL=y
 CONFIG_CGROUP_BPF=y
 CONFIG_PSI=y
-CONFIG_UEVENT_HELPER_PATH=""
+# CONFIG_UEVENT_HELPER is not set
 # CONFIG_FW_LOADER_USER_HELPER is not set
 
 # ---- Security hardening (enabled unless technically justified otherwise) --------------

@@ -8,6 +8,7 @@
 #          "xlin"    = a decision of this project (docs/CONFIGURATION.md).
 
 # systemd, required
+UEVENT_HELPER       off # systemd (legacy hotplug helper must stay off)
 DEVTMPFS            y   # systemd
 CGROUPS             y   # systemd
 INOTIFY_USER        y   # systemd
@@ -43,6 +44,13 @@ VIRTIO_NET          y   # xlin: QEMU network
 BLK_DEV_NVME        y   # xlin: NVMe disks
 SATA_AHCI           y   # xlin: SATA disks
 MODULES             y   # xlin: module support
+
+# Console: a terminal-only system must show a console on a UEFI screen
+VT_CONSOLE          y   # xlin
+FB                  y   # xlin: needed by the framebuffer console
+DRM_FBDEV_EMULATION y   # xlin
+FRAMEBUFFER_CONSOLE y   # xlin
+DRM_SIMPLEDRM       y   # xlin: UEFI firmware framebuffer
 
 # Security: these must stay on
 SECURITY            y   # xlin

@@ -294,7 +294,7 @@ delta="$out/delta.txt"
 	echo "# Format: SYMBOL  upstream -> xlin   ('-' = symbol absent/not set)"
 	for f in config.upstream config.xlin; do
 		grep -E '^(CONFIG_[A-Z0-9_]+=|# CONFIG_[A-Z0-9_]+ is not set$)' "$out/run1/$f" |
-			sed -E 's/^# (CONFIG_[A-Z0-9_]+) is not set$/\1=n/' | sort >"$tmp/$f.kv"
+			sed -E 's/^# (CONFIG_[A-Z0-9_]+) is not set$/\1=n/' | sort -t= -k1,1 >"$tmp/$f.kv"
 	done
 	join -t= -a1 -a2 -e - -o 0,1.2,2.2 "$tmp/config.upstream.kv" "$tmp/config.xlin.kv" |
 		awk -F= '$2 != $3 {printf "%-40s %s -> %s\n", substr($1, 8), $2, $3}'
