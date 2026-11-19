@@ -1,0 +1,336 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Xlin Config Check: consistency checks for config/x86_64/xlin_defconfig.
+#
+#   --static  needs only the fetched source: checks the files' syntax and that
+#             every symbol they name exists in the pinned release's Kconfig files.
+#   --full    also runs the real kernel configuration tools (make, gcc, flex,
+#             bison) on the pinned source: applies the fragment, checks that every
+#             setting really took effect, that the requirements hold, that the
+#             result is reproducible and survives a savedefconfig round trip.
+#
+# It configures only. It never compiles the kernel and never modifies the source
+# tree (all output goes to a separate directory).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+usage() {
+	cat <<'USAGE'
+Usage: scripts/xlin-config-check (--static | --full) [options]
+
+Options:
+  --src DIR        pinned kernel source (default: upstream/src/linux)
+  --fragment FILE  config fragment (default: config/x86_64/xlin_defconfig)
+  --requirements FILE
+                   requirements list (default: config/x86_64/requirements.txt)
+  --out DIR        output directory for --full (default: a new temporary one)
+  --report DIR     write delta.txt and the final config files here (--full)
+  --arch-ref FILE  informational: compare the fragment's settings with another
+                   kernel .config (for example Arch Linux's); never fails the check
+  -h, --help       show this help
+
+Exit status: 0 = all checks passed, 1 = a check failed, 3 = cannot run
+(missing tool or source).
+USAGE
+}
+
+src="$ROOT/upstream/src/linux"
+fragment="$ROOT/config/x86_64/xlin_defconfig"
+reqs="$ROOT/config/x86_64/requirements.txt"
+out=""
+report=""
+archref=""
+mode=""
+die() { echo "error: $*" >&2; exit 3; }
+while [ $# -gt 0 ]; do
+	case $1 in
+	--static) mode=static; shift ;;
+	--full) mode=full; shift ;;
+	--src) [ $# -ge 2 ] || die "--src needs a value"; src=$2; shift 2 ;;
+	--fragment) [ $# -ge 2 ] || die "--fragment needs a value"; fragment=$2; shift 2 ;;
+	--requirements) [ $# -ge 2 ] || die "--requirements needs a value"; reqs=$2; shift 2 ;;
+	--out) [ $# -ge 2 ] || die "--out needs a value"; out=$2; shift 2 ;;
+	--report) [ $# -ge 2 ] || die "--report needs a value"; report=$2; shift 2 ;;
+	--arch-ref) [ $# -ge 2 ] || die "--arch-ref needs a value"; archref=$2; shift 2 ;;
+	-h | --help) usage; exit 0 ;;
+	*) usage >&2; die "unknown option: $1" ;;
+	esac
+done
+[ -n "$mode" ] || { usage >&2; die "choose --static or --full"; }
+[ -f "$src/Kconfig" ] || die "no kernel source at $src (run scripts/xlin-fetch first)"
+[ -r "$fragment" ] || die "cannot read $fragment"
+[ -r "$reqs" ] || die "cannot read $reqs"
+
+n_pass=0 n_fail=0
+ok() { printf 'PASS  %s\n' "$1"; n_pass=$((n_pass + 1)); }
+bad() { printf 'FAIL  %s\n' "$1"; n_fail=$((n_fail + 1)); }
+detail() { while IFS= read -r l; do printf '        %s\n' "$l"; done; }
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# --- parse the fragment into "SYMBOL<TAB>VALUE" lines (value: y, m, n, or the text/number)
+parse_fragment() {
+	local line n=0
+	while IFS= read -r line || [ -n "$line" ]; do
+		n=$((n + 1))
+		if [[ $line =~ ^\#\ CONFIG_([A-Z0-9_]+)\ is\ not\ set$ ]]; then
+			printf '%s\tn\n' "${BASH_REMATCH[1]}"
+		elif [[ $line =~ ^CONFIG_([A-Z0-9_]+)=(.*)$ ]]; then
+			printf '%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+		elif [[ -z $line || $line =~ ^\#($|[^\ ]|\ [^C]|\ C[^O]) ]]; then
+			: # blank line or prose comment
+		else
+			echo "line $n: not a comment, blank line or well-formed CONFIG setting: $line" >&2
+			return 1
+		fi
+	done <"$fragment"
+}
+
+echo "Xlin Config Check ($mode): $(basename "$fragment")"
+echo "  source: $src ($(git -C "$src" rev-parse -q --verify HEAD 2>/dev/null || echo 'no git data'))"
+echo
+
+# 1. fragment syntax
+if parse_fragment >"$tmp/frag.tsv" 2>"$tmp/frag.err"; then
+	ok "fragment syntax: $(wc -l <"$tmp/frag.tsv") settings parsed"
+else
+	bad "fragment syntax"
+	detail <"$tmp/frag.err"
+	echo "Checks: $n_pass passed, $n_fail failed"
+	exit 1
+fi
+
+# 2. duplicates and conflicting settings
+dups=$(cut -f1 "$tmp/frag.tsv" | sort | uniq -d)
+if [ -z "$dups" ]; then ok "no symbol is set twice"; else
+	bad "symbols set more than once"
+	detail <<<"$dups"
+fi
+
+# 3. requirements syntax
+: >"$tmp/req.tsv"
+req_err=""
+rn=0
+while IFS= read -r line || [ -n "$line" ]; do
+	rn=$((rn + 1))
+	line=${line%%#*}
+	read -r sym expect extra <<<"$line"
+	[ -n "${sym:-}" ] || continue
+	if [ -n "${extra:-}" ] || ! [[ $sym =~ ^[A-Z0-9_]+$ ]] || ! [[ ${expect:-} =~ ^(y|m|ym|n|off)$ ]]; then
+		req_err+="requirements line $rn: '$line'"$'\n'
+		continue
+	fi
+	printf '%s\t%s\n' "$sym" "$expect" >>"$tmp/req.tsv"
+done <"$reqs"
+if [ -z "$req_err" ] && [ -z "$(cut -f1 "$tmp/req.tsv" | sort | uniq -d)" ]; then
+	ok "requirements syntax: $(wc -l <"$tmp/req.tsv") requirements"
+else
+	bad "requirements syntax (bad line or duplicate symbol)"
+	printf '%s' "$req_err" | detail
+fi
+
+# 4. every named symbol exists in the pinned Kconfig files
+(cd "$src" && find . -name 'Kconfig*' -type f -not -path './tools/*' -print0 |
+	xargs -0 grep -hoE '^[[:space:]]*(menu)?config[[:space:]]+[A-Z0-9_]+' |
+	awk '{print $NF}' | sort -u) >"$tmp/symbols.txt"
+if [ "$(wc -l <"$tmp/symbols.txt")" -lt 5000 ]; then
+	bad "symbol index looks wrong ($(wc -l <"$tmp/symbols.txt") symbols found in $src)"
+else
+	missing=$(
+		{
+			cut -f1 "$tmp/frag.tsv"
+			awk -F'\t' '$2 != "off" {print $1}' "$tmp/req.tsv"
+		} | sort -u | comm -23 - "$tmp/symbols.txt"
+	)
+	if [ -z "$missing" ]; then
+		ok "every named symbol exists in this release's Kconfig ($(wc -l <"$tmp/symbols.txt") symbols indexed)"
+	else
+		bad "symbols that do not exist in this release"
+		detail <<<"$missing"
+	fi
+fi
+
+# 5. fragment and requirements agree
+disagree=""
+while IFS=$'\t' read -r sym expect; do
+	val=$(awk -F'\t' -v s="$sym" '$1 == s {print $2}' "$tmp/frag.tsv")
+	[ -n "$val" ] || continue
+	case $expect in
+	y | m | n) [ "$val" = "$expect" ] || disagree+="$sym: fragment sets '$val', requirement is '$expect'"$'\n' ;;
+	ym) [ "$val" = y ] || [ "$val" = m ] || disagree+="$sym: fragment sets '$val', requirement is y or m"$'\n' ;;
+	off) [ "$val" = n ] || disagree+="$sym: fragment sets '$val', requirement is off"$'\n' ;;
+	esac
+done <"$tmp/req.tsv"
+if [ -z "$disagree" ]; then ok "fragment and requirements do not contradict each other"; else
+	bad "fragment contradicts requirements"
+	printf '%s' "$disagree" | detail
+fi
+
+if [ "$mode" = static ]; then
+	echo
+	echo "Checks: $n_pass passed, $n_fail failed (static mode: the real kconfig tools were NOT run)"
+	[ "$n_fail" -eq 0 ]
+	exit
+fi
+
+# ---------------------------------------------------------------------------
+# --full: run the real kernel configuration tools
+# ---------------------------------------------------------------------------
+for t in make gcc flex bison; do
+	command -v "$t" >/dev/null || die "--full needs '$t' (install it, or rely on CI)"
+done
+[ -n "$out" ] || out="$tmp/out"
+mkdir -p "$out"
+export ARCH=x86 LC_ALL=C
+echo
+echo "Toolchain used for configuration (recorded because some symbols depend on it):"
+echo "  $(gcc --version | head -n1)"
+echo "  $(make --version | head -n1)"
+
+before=$(git -C "$src" status --porcelain --untracked-files=no 2>/dev/null || true)
+
+# configure NAME: x86_64_defconfig + fragment + olddefconfig into $out/NAME
+configure() {
+	local d="$out/$1"
+	mkdir -p "$d"
+	make -s -C "$src" O="$d" x86_64_defconfig >"$d/log.defconfig" 2>&1 || return 1
+	cp "$d/.config" "$d/config.upstream.raw"
+	make -s -C "$src" O="$d" olddefconfig >>"$d/log.defconfig" 2>&1 || return 1
+	cp "$d/.config" "$d/config.upstream"
+	(cd "$src" && KCONFIG_CONFIG="$d/.config" scripts/kconfig/merge_config.sh -m -O "$d" "$d/config.upstream.raw" "$fragment") \
+		>"$d/log.merge" 2>&1 || return 1
+	make -s -C "$src" O="$d" olddefconfig >"$d/log.olddefconfig" 2>&1 || return 1
+	cp "$d/.config" "$d/config.xlin"
+}
+
+if configure run1 && configure run2; then
+	ok "x86_64_defconfig + fragment + olddefconfig completed (twice)"
+else
+	bad "configuration failed; see logs in $out/run1 and $out/run2"
+	tail -n 20 "$out"/run1/log.* 2>/dev/null | detail
+	echo "Checks: $n_pass passed, $n_fail failed"
+	exit 1
+fi
+
+# reproducible: two independent runs give byte-identical output
+if cmp -s "$out/run1/config.xlin" "$out/run2/config.xlin"; then
+	ok "reproducible: two independent runs give an identical .config"
+else
+	bad "not reproducible: two runs differ"
+	diff "$out/run1/config.xlin" "$out/run2/config.xlin" | head -n 10 | detail
+fi
+
+final="$out/run1/config.xlin"
+value_of() { # SYMBOL FILE -> y|m|n|VALUE, or the empty string when absent
+	local s=$1 f=$2 l
+	l=$(grep -E "^(CONFIG_${s}=|# CONFIG_${s} is not set\$)" "$f" | head -n1 || true)
+	case $l in
+	"") ;;
+	"# "*) echo n ;;
+	*) echo "${l#CONFIG_"${s}"=}" ;;
+	esac
+}
+
+# every setting in the fragment is really in effect (not silently dropped for a dependency)
+lost=""
+while IFS=$'\t' read -r sym want; do
+	got=$(value_of "$sym" "$final")
+	if [ "$want" = n ]; then
+		[ "$got" = n ] || [ -z "$got" ] || lost+="CONFIG_$sym: fragment asks 'n', final config has '$got'"$'\n'
+	else
+		[ "$got" = "$want" ] || lost+="CONFIG_$sym: fragment asks '$want', final config has '${got:-<absent>}'"$'\n'
+	fi
+done <"$tmp/frag.tsv"
+if [ -z "$lost" ]; then ok "every fragment setting is in effect in the final config"; else
+	bad "settings that did not take effect (unmet dependency or conflict)"
+	printf '%s' "$lost" | detail
+fi
+
+# requirements hold in the final config
+unmet=""
+while IFS=$'\t' read -r sym expect; do
+	got=$(value_of "$sym" "$final")
+	case $expect in
+	y | m) [ "$got" = "$expect" ] || unmet+="$sym: need $expect, got '${got:-<absent>}'"$'\n' ;;
+	ym) [ "$got" = y ] || [ "$got" = m ] || unmet+="$sym: need y or m, got '${got:-<absent>}'"$'\n' ;;
+	n) { [ "$got" = n ] || [ -z "$got" ]; } || unmet+="$sym: must not be set, got '$got'"$'\n' ;;
+	off) { [ "$got" = n ] || [ -z "$got" ]; } || unmet+="$sym: must be off, got '$got'"$'\n' ;;
+	esac
+done <"$tmp/req.tsv"
+if [ -z "$unmet" ]; then ok "all $(wc -l <"$tmp/req.tsv") requirements hold in the final config"; else
+	bad "requirements not met"
+	printf '%s' "$unmet" | detail
+fi
+
+# savedefconfig round trip: the minimal form expands back to the same config
+rt="$out/roundtrip"
+mkdir -p "$rt"
+if make -s -C "$src" O="$out/run1" savedefconfig >"$out/run1/log.savedefconfig" 2>&1 &&
+	cp "$out/run1/defconfig" "$rt/.config" &&
+	make -s -C "$src" O="$rt" olddefconfig >"$rt/log" 2>&1; then
+	if cmp -s "$rt/.config" "$final"; then
+		ok "savedefconfig round trip reproduces the final config ($(wc -l <"$out/run1/defconfig") lines minimal form)"
+	else
+		bad "savedefconfig round trip differs from the final config"
+		diff "$final" "$rt/.config" | head -n 10 | detail
+	fi
+else
+	bad "savedefconfig round trip could not run"
+	tail -n 10 "$rt/log" 2>/dev/null | detail
+fi
+
+# the source tree is untouched
+after=$(git -C "$src" status --porcelain --untracked-files=no 2>/dev/null || true)
+if [ "$before" = "$after" ]; then ok "the pinned source tree was not modified"; else bad "the source tree was modified"; fi
+
+# difference from the upstream defconfig
+delta="$out/delta.txt"
+{
+	echo "# Settings whose value differs between the upstream x86_64 defconfig (after olddefconfig) and Xlin."
+	echo "# Format: SYMBOL  upstream -> xlin   ('-' = symbol absent/not set)"
+	for f in config.upstream config.xlin; do
+		grep -E '^(CONFIG_[A-Z0-9_]+=|# CONFIG_[A-Z0-9_]+ is not set$)' "$out/run1/$f" |
+			sed -E 's/^# (CONFIG_[A-Z0-9_]+) is not set$/\1=n/' | sort >"$tmp/$f.kv"
+	done
+	join -t= -a1 -a2 -e - -o 0,1.2,2.2 "$tmp/config.upstream.kv" "$tmp/config.xlin.kv" |
+		awk -F= '$2 != $3 {printf "%-40s %s -> %s\n", substr($1, 8), $2, $3}'
+} >"$delta"
+changed=$(grep -vc '^#' "$delta" || true)
+echo "INFO  $changed symbols differ from the upstream defconfig (explicitly requested: $(wc -l <"$tmp/frag.tsv"); the rest follow from dependencies)"
+
+# informational comparison with another kernel config (never fails)
+if [ -n "$archref" ]; then
+	if [ -r "$archref" ]; then
+		cmpf="$out/arch-comparison.txt"
+		{
+			echo "# Fragment settings compared with $archref (informational)."
+			echo "# SYMBOL  xlin-final  reference"
+			while IFS=$'\t' read -r sym _; do
+				a=$(value_of "$sym" "$final")
+				b=$(value_of "$sym" "$archref")
+				[ "$a" = "$b" ] || printf '%-40s %s  %s\n' "$sym" "${a:--}" "${b:--}"
+			done <"$tmp/frag.tsv"
+		} >"$cmpf"
+		echo "INFO  comparison with $(basename "$archref"): $(grep -vc '^#' "$cmpf" || true) of $(wc -l <"$tmp/frag.tsv") fragment settings differ (see arch-comparison.txt)"
+	else
+		echo "INFO  --arch-ref file not readable; comparison skipped"
+	fi
+fi
+
+if [ -n "$report" ]; then
+	mkdir -p "$report"
+	cp "$delta" "$report/delta.txt"
+	cp "$final" "$report/config.xlin"
+	cp "$out/run1/config.upstream" "$report/config.upstream"
+	cp "$out/run1/defconfig" "$report/defconfig.minimal"
+	[ -f "$out/arch-comparison.txt" ] && cp "$out/arch-comparison.txt" "$report/"
+	echo "INFO  reports written to $report"
+fi
+
+echo
+echo "Checks: $n_pass passed, $n_fail failed"
+[ "$n_fail" -eq 0 ]

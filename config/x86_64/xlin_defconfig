@@ -1,0 +1,180 @@
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Xlin Kernel configuration for x86_64 UEFI desktop/laptop systems.
+#
+# This is a CONFIG FRAGMENT: the settings Xlin changes or pins on top of the
+# upstream x86_64 defconfig of the pinned release (see upstream/UPSTREAM.lock).
+# It is applied with:   scripts/xlin-config-check --full   (see docs/CONFIGURATION.md)
+#   make x86_64_defconfig  ->  merge this fragment  ->  make olddefconfig
+# Everything not listed here keeps the upstream defconfig value (or the Kconfig
+# default). Rationale for every group is in docs/CONFIGURATION.md; the settings
+# that other software requires are listed with their source in requirements.txt.
+#
+# Origin: written by Axion Co. from the pinned release's Kconfig files, the upstream
+# x86_64 defconfig and the systemd README. No line was copied from the Arch Linux
+# kernel config; it was used only as a comparison (docs/CONFIGURATION.md, "Arch").
+# Settings are not claimed to work on physical hardware that has not been tested.
+
+# ---- Identity -------------------------------------------------------------
+CONFIG_LOCALVERSION="-xlin"
+CONFIG_DEFAULT_HOSTNAME="xlinos"
+
+# ---- Image and initramfs compression ---------------------------------------
+CONFIG_KERNEL_ZSTD=y
+CONFIG_RD_ZSTD=y
+CONFIG_RD_XZ=y
+
+# ---- Modules ---------------------------------------------------------------
+# Loadable modules are on (upstream default). Modules are signed with a build-time
+# key; signatures are not yet enforced (MODULE_SIG_FORCE is an open decision).
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+CONFIG_MODULE_SIG=y
+CONFIG_MODULE_SIG_ALL=y
+CONFIG_MODULE_SIG_SHA512=y
+CONFIG_MODULE_COMPRESS=y
+CONFIG_MODULE_COMPRESS_ZSTD=y
+
+# ---- Boot: UEFI, QEMU/OVMF ---------------------------------------------------
+CONFIG_EFI=y
+CONFIG_EFI_STUB=y
+CONFIG_EFIVAR_FS=y
+CONFIG_RESET_ATTACK_MITIGATION=y
+CONFIG_TCG_TPM=y
+CONFIG_TCG_TIS=y
+CONFIG_TCG_CRB=y
+
+# ---- Storage: virtio, SATA, NVMe, USB ---------------------------------------
+CONFIG_VIRTIO_BLK=y
+CONFIG_SCSI_VIRTIO=y
+CONFIG_ATA=y
+CONFIG_SATA_AHCI=y
+CONFIG_ATA_PIIX=y
+CONFIG_BLK_DEV_NVME=y
+CONFIG_BLK_DEV_LOOP=y
+CONFIG_BLK_DEV_BSG=y
+CONFIG_USB_STORAGE=y
+CONFIG_USB_UAS=y
+
+# ---- Filesystems ---------------------------------------------------------------
+# Built in: what the live system and a normal install boot from.
+CONFIG_EXT4_FS=y
+CONFIG_VFAT_FS=y
+CONFIG_FAT_FS=y
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_SQUASHFS_ZSTD=y
+CONFIG_OVERLAY_FS=y
+CONFIG_ISO9660_FS=y
+CONFIG_TMPFS=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_TMPFS_XATTR=y
+CONFIG_AUTOFS_FS=y
+# Modules: common, but not needed to boot.
+CONFIG_BTRFS_FS=m
+CONFIG_XFS_FS=m
+CONFIG_EXFAT_FS=m
+CONFIG_NTFS3_FS=m
+CONFIG_UDF_FS=m
+CONFIG_FUSE_FS=m
+CONFIG_VIRTIO_FS=m
+
+# ---- Networking: virtio and common wired NICs -----------------------------------
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_IPV6=y
+CONFIG_VIRTIO_NET=y
+CONFIG_E1000E=y
+CONFIG_R8169=y
+CONFIG_IGB=m
+CONFIG_IGC=m
+CONFIG_TIGON3=y
+
+# ---- Console and graphics (terminal-only baseline) --------------------------------
+CONFIG_VT=y
+CONFIG_VT_CONSOLE=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SYSFB_SIMPLEFB=y
+CONFIG_DRM=y
+CONFIG_DRM_SIMPLEDRM=y
+CONFIG_DRM_VIRTIO_GPU=y
+CONFIG_DRM_BOCHS=y
+CONFIG_DRM_I915=m
+CONFIG_DRM_AMDGPU=m
+
+# ---- Virtual machine guest support (QEMU/KVM) -----------------------------------------
+CONFIG_HYPERVISOR_GUEST=y
+CONFIG_PARAVIRT=y
+CONFIG_KVM_GUEST=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BALLOON=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_HW_RANDOM_VIRTIO=y
+
+# ---- initramfs and systemd (see requirements.txt for the source of each) -------------
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_CGROUPS=y
+CONFIG_NAMESPACES=y
+CONFIG_USER_NS=y
+CONFIG_NET_NS=y
+CONFIG_PID_NS=y
+CONFIG_UTS_NS=y
+CONFIG_IPC_NS=y
+CONFIG_INOTIFY_USER=y
+CONFIG_FANOTIFY=y
+CONFIG_SIGNALFD=y
+CONFIG_TIMERFD=y
+CONFIG_EPOLL=y
+CONFIG_UNIX=y
+CONFIG_SYSFS=y
+CONFIG_PROC_FS=y
+CONFIG_FHANDLE=y
+CONFIG_SHMEM=y
+CONFIG_DMIID=y
+CONFIG_SECCOMP=y
+CONFIG_SECCOMP_FILTER=y
+CONFIG_BPF_SYSCALL=y
+CONFIG_CGROUP_BPF=y
+CONFIG_PSI=y
+CONFIG_UEVENT_HELPER_PATH=""
+# CONFIG_FW_LOADER_USER_HELPER is not set
+
+# ---- Security hardening (enabled unless technically justified otherwise) --------------
+CONFIG_SECURITY=y
+CONFIG_SECURITY_YAMA=y
+CONFIG_SECURITY_LANDLOCK=y
+CONFIG_SECURITY_LOCKDOWN_LSM=y
+CONFIG_SECURITY_DMESG_RESTRICT=y
+CONFIG_CPU_MITIGATIONS=y
+CONFIG_RANDOMIZE_BASE=y
+CONFIG_RANDOMIZE_MEMORY=y
+CONFIG_STACKPROTECTOR=y
+CONFIG_STACKPROTECTOR_STRONG=y
+CONFIG_VMAP_STACK=y
+CONFIG_FORTIFY_SOURCE=y
+CONFIG_HARDENED_USERCOPY=y
+CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y
+CONFIG_SLAB_FREELIST_RANDOM=y
+CONFIG_SLAB_FREELIST_HARDENED=y
+CONFIG_SHUFFLE_PAGE_ALLOCATOR=y
+CONFIG_RANDOMIZE_KSTACK_OFFSET_DEFAULT=y
+CONFIG_STRICT_DEVMEM=y
+CONFIG_IO_STRICT_DEVMEM=y
+CONFIG_BPF_UNPRIV_DEFAULT_OFF=y
+CONFIG_LEGACY_VSYSCALL_NONE=y
+
+# ---- Debugging and diagnostics --------------------------------------------------------
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
+CONFIG_KALLSYMS=y
+CONFIG_MAGIC_SYSRQ=y
+CONFIG_PRINTK_TIME=y
+CONFIG_DYNAMIC_DEBUG=y
+CONFIG_CRASH_DUMP=y
+CONFIG_PROC_VMCORE=y
+CONFIG_ZRAM=m
