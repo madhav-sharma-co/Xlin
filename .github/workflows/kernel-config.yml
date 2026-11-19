@@ -85,6 +85,13 @@ jobs:
             echo '### Arch reference'; echo '```'; cat ref/arch-linux-lts.info; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Show the differences (from the upstream defconfig, and from the Arch reference)
+        run: |
+          {
+            echo '### Differences from the upstream x86_64 defconfig'; echo '```'; cat report/delta.txt; echo '```'
+            echo '### Fragment settings that differ from the Arch reference'; echo '```'; cat report/arch-comparison.txt; echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Pinned source is still unmodified
         run: ./scripts/xlin-verify --strict >/dev/null
 
