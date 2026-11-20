@@ -1,0 +1,324 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Xlin Build: compile the pinned Linux source with the approved Xlin x86_64
+# configuration, check the expected artifacts and write a build report.
+#
+# This is a BUILD validation only. It never boots the kernel, never modifies the
+# pinned source (everything is written to a separate output directory) and never
+# changes a configuration option to make the build pass: the configuration is
+# produced by scripts/xlin-config-check --full exactly as documented, and a build
+# error is reported as an error.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/xlin-lock.sh
+. "$ROOT/scripts/lib/xlin-lock.sh"
+
+usage() {
+	cat <<'USAGE'
+Usage: scripts/xlin-build [options]
+
+Build the pinned kernel with config/x86_64/xlin_defconfig.
+
+Options:
+  --src DIR        pinned kernel source (default: upstream/src/linux)
+  --out DIR        output directory (default: build/xlin-x86_64); must not exist
+                   or must have been created by this script
+  --jobs N         parallel jobs (default: number of CPUs)
+  -h, --help       show this help
+
+Writes, below the output directory:
+  build/           the kernel build tree (bzImage, vmlinux, System.map, .config)
+  staging/         modules installed with modules_install
+  logs/            the full log of every step
+  report/          build-report.md and build-report.env
+
+Needs: make gcc flex bison bc zstd depmod (kmod) file size nm od, and the
+development headers for libelf and OpenSSL. Exit status: 0 = built and every
+artifact check passed; 1 = a step or check failed; 3 = cannot run.
+USAGE
+}
+
+src="$ROOT/upstream/src/linux"
+out="$ROOT/build/xlin-x86_64"
+jobs=$(nproc 2>/dev/null || echo 2)
+while [ $# -gt 0 ]; do
+	case $1 in
+	--src) [ $# -ge 2 ] || xlin_die "--src needs a value"; src=$2; shift 2 ;;
+	--out) [ $# -ge 2 ] || xlin_die "--out needs a value"; out=$2; shift 2 ;;
+	--jobs) [ $# -ge 2 ] || xlin_die "--jobs needs a value"; jobs=$2; shift 2 ;;
+	-h | --help) usage; exit 0 ;;
+	*) usage >&2; xlin_die "unknown option: $1" ;;
+	esac
+done
+[[ $jobs =~ ^[1-9][0-9]*$ ]] || xlin_die "--jobs must be a positive integer"
+
+cant() { printf 'error: %s\n' "$*" >&2; exit 3; }
+
+xlin_lock_load "$ROOT/upstream/UPSTREAM.lock"
+want_commit=${LOCK[source.commit]}
+version=${LOCK[source.version]}
+[ -f "$src/Kconfig" ] || cant "no kernel source at $src (run scripts/xlin-fetch first)"
+
+# --- 1. preflight: tools and headers -------------------------------------------------
+missing=""
+for t in make gcc flex bison bc zstd depmod file size nm od sha256sum git; do
+	command -v "$t" >/dev/null 2>&1 || missing+=" $t"
+done
+printf '#include <openssl/opensslv.h>\n' | gcc -E -x c - >/dev/null 2>&1 || missing+=" libssl-dev(headers)"
+printf '#include <libelf.h>\n' | gcc -E -x c - >/dev/null 2>&1 || missing+=" libelf-dev(headers)"
+[ -z "$missing" ] || cant "missing tools or headers:$missing"
+
+# --- 2. the source must be exactly the pinned commit and untouched ----------------------
+head=$(git -C "$src" rev-parse -q --verify HEAD 2>/dev/null || true)
+[ "$head" = "$want_commit" ] || xlin_die "source is at '${head:-unknown}', the pin is $want_commit (run scripts/xlin-fetch and scripts/xlin-verify)"
+[ -z "$(git -C "$src" status --porcelain 2>/dev/null)" ] || xlin_die "the source tree has modified or untracked files; refusing to build (run scripts/xlin-verify)"
+
+# --- 3. output directory ----------------------------------------------------------------
+marker="$out/.xlin-build"
+if [ -e "$out" ] && [ ! -f "$marker" ]; then
+	xlin_die "$out exists but was not created by Xlin Build; refusing to use it"
+fi
+rm -rf "$out"
+mkdir -p "$out"/{logs,report,staging}
+printf 'created_by=xlin-build\n' >"$marker"
+bdir="$out/build"
+log="$out/logs"
+rep="$out/report"
+
+step_fail() { # NAME LOGFILE
+	printf '\nFAILED: %s. Last lines of %s:\n' "$1" "$2" >&2
+	tail -n 40 "$2" >&2
+	exit 1
+}
+fmt_s() { printf '%dm%02ds' $(($1 / 60)) $(($1 % 60)); }
+t_start=$SECONDS
+
+echo "Xlin Build: Linux $version, commit $want_commit"
+echo "  output: $out, jobs: $jobs"
+
+# --- 4. configuration: exactly the approved one ---------------------------------------------
+echo "[1/4] configuration (scripts/xlin-config-check --full)"
+t0=$SECONDS
+"$ROOT/scripts/xlin-config-check" --full --src "$src" --out "$out/config" >"$log/config-check.log" 2>&1 ||
+	step_fail "configuration check" "$log/config-check.log"
+approved="$out/config/run1/config.xlin"
+[ -f "$approved" ] || xlin_die "the configuration check produced no final config"
+mkdir -p "$bdir"
+cp "$approved" "$bdir/.config"
+export ARCH=x86 LC_ALL=C
+make -s -C "$src" O="$bdir" olddefconfig >"$log/olddefconfig.log" 2>&1 || step_fail "olddefconfig" "$log/olddefconfig.log"
+cmp -s "$approved" "$bdir/.config" || xlin_die "the build configuration differs from the approved one after olddefconfig"
+t_config=$((SECONDS - t0))
+echo "      approved config reproduced exactly ($(wc -l <"$bdir/.config") lines)"
+
+# --- 5. compile ----------------------------------------------------------------------------------
+echo "[2/4] compile (make: vmlinux bzImage modules)"
+timer=()
+[ -x /usr/bin/time ] && timer=(/usr/bin/time -v -o "$log/build.time")
+t0=$SECONDS
+set +e
+"${timer[@]}" make -C "$src" O="$bdir" -j"$jobs" KBUILD_BUILD_USER=xlin KBUILD_BUILD_HOST=xlin-build >"$log/build.log" 2>&1
+rc=$?
+set -e
+t_build=$((SECONDS - t0))
+[ "$rc" -eq 0 ] || step_fail "compile (exit $rc)" "$log/build.log"
+rel=$(cat "$bdir/include/config/kernel.release")
+echo "      built in $(fmt_s "$t_build"), kernel release $rel"
+
+# --- 6. modules ------------------------------------------------------------------------------------
+echo "[3/4] install modules into the staging directory"
+t0=$SECONDS
+make -C "$src" O="$bdir" -j"$jobs" modules_install INSTALL_MOD_PATH="$out/staging" >"$log/modules_install.log" 2>&1 ||
+	step_fail "modules_install" "$log/modules_install.log"
+t_mod=$((SECONDS - t0))
+
+# --- 7. artifact checks ------------------------------------------------------------------------------
+echo "[4/4] artifact checks"
+checks_failed=0
+declare -a CHECK_ROWS=()
+check() { # NAME CONDITION-RESULT(0=ok) DETAIL
+	if [ "$2" -eq 0 ]; then CHECK_ROWS+=("| PASS | $1 | $3 |"); printf '  PASS  %s\n' "$1"
+	else CHECK_ROWS+=("| FAIL | $1 | $3 |"); printf '  FAIL  %s: %s\n' "$1" "$3"; checks_failed=$((checks_failed + 1)); fi
+}
+# Each check records its own result; a failing test must not stop the script.
+set +e
+bz="$bdir/arch/x86/boot/bzImage"
+vml="$bdir/vmlinux"
+mods="$out/staging/lib/modules/$rel"
+
+[ "$rel" = "$version-xlin" ]; check "kernel release is $version-xlin" $? "got '$rel'"
+[ -s "$bz" ]; check "bzImage exists and is not empty" $? "$bz"
+fileinfo=$(file -b "$bz" 2>/dev/null || true)
+[[ $fileinfo == *"bzImage"* ]]; check "bzImage is an x86 boot image" $? "$fileinfo"
+# EFI stub: DOS header 'MZ' and a PE signature at e_lfanew (checked without booting)
+mz=$(head -c2 "$bz" 2>/dev/null || true)
+pe_off=$(od -An -tu4 -j60 -N4 "$bz" 2>/dev/null | tr -d ' ' || echo 0)
+pe_hex=$(dd if="$bz" bs=1 skip="${pe_off:-0}" count=4 2>/dev/null | od -An -tx1 | tr -d ' \n' || true)
+[ "$mz" = "MZ" ] && [ "$pe_hex" = "50450000" ]; check "bzImage has an EFI/PE header (EFI stub present)" $? "MZ + PE signature at offset ${pe_off:-?}"
+[ -s "$vml" ] && [ "$(head -c4 "$vml" | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; check "vmlinux exists and is an ELF file" $? "$vml"
+[ -s "$bdir/System.map" ]; check "System.map exists" $? "$bdir/System.map"
+[ -s "$bdir/.config" ]; check ".config exists" $? "$bdir/.config"
+[ -s "$mods/modules.dep" ]; check "modules.dep exists (depmod ran)" $? "$mods/modules.dep"
+[ -s "$mods/modules.builtin" ]; check "modules.builtin exists" $? "$mods/modules.builtin"
+n_zst=$(find "$mods" -name '*.ko.zst' -type f | wc -l)
+n_ko=$(find "$mods" -name '*.ko' -type f | wc -l)
+[ "$n_zst" -gt 0 ]; check "modules were installed" $? "$n_zst modules"
+[ "$n_ko" -eq 0 ]; check "every module is zstd-compressed as configured" $? "$n_ko uncompressed .ko files"
+[ -z "$(git -C "$src" status --porcelain 2>/dev/null)" ] && [ "$(git -C "$src" rev-parse HEAD)" = "$want_commit" ]
+check "the pinned source tree is unmodified and at the pinned commit" $? "$want_commit"
+set -e
+
+# --- 8. measurements -------------------------------------------------------------------------------------
+n_warn=$(grep -ciE '(^|[^a-z])warning:' "$log/build.log" || true)
+n_err=$(grep -ciE '(^|[^a-z])error:' "$log/build.log" || true)
+sz_bz=$(stat -c %s "$bz")
+sz_vml=$(stat -c %s "$vml")
+read -r k_text k_data k_bss _ < <(size "$vml" | awk 'NR==2')
+sz_mods=$(find "$mods" -name '*.ko.zst' -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')
+n_builtin=$(grep -c . "$mods/modules.builtin")
+n_cfg_y=$(grep -c '=y$' "$bdir/.config" || true)
+n_cfg_m=$(grep -c '=m$' "$bdir/.config" || true)
+disk_mb=$(du -sm "$bdir" | cut -f1)
+peak_kb=""
+[ -f "$log/build.time" ] && peak_kb=$(awk -F: '/Maximum resident set size/ {gsub(/ /, "", $2); print $2}' "$log/build.time")
+cpu_model=$(awk -F: '/model name/ {print $2; exit}' /proc/cpuinfo | sed 's/^ //')
+mem_gb=$(awk '/MemTotal/ {printf "%.1f", $2 / 1048576}' /proc/meminfo)
+t_total=$((SECONDS - t_start))
+
+sub_sizes() { # prints "KB  name" of linked-in object size per subsystem (before final link)
+	local d a
+	for d in arch block certs crypto drivers fs init io_uring ipc kernel lib mm net security sound virt; do
+		a="$bdir/$d/built-in.a"
+		[ -f "$a" ] || continue
+		size -t "$a" 2>/dev/null | awk -v n="$d" '$NF == "(TOTALS)" {printf "%d %s\n", $1 + $2, n}'
+	done | sort -rn
+}
+drv_sizes() {
+	local a d
+	for a in "$bdir"/drivers/*/built-in.a; do
+		[ -f "$a" ] || continue
+		d=$(basename "$(dirname "$a")")
+		size -t "$a" 2>/dev/null | awk -v n="drivers/$d" '$NF == "(TOTALS)" {printf "%d %s\n", $1 + $2, n}'
+	done | sort -rn | head -n 12
+}
+
+{
+	echo "# Xlin Kernel first build report"
+	echo
+	echo "**This is a build validation only. The kernel has NOT been booted or tested.** Not a release."
+	echo
+	echo "## Result"
+	echo
+	if [ "$checks_failed" -eq 0 ]; then echo "- Build: **succeeded**, all artifact checks passed"; else echo "- Build: compiled, but **$checks_failed artifact check(s) failed**"; fi
+	echo "- Kernel release: \`$rel\`"
+	echo "- Source: Linux $version, commit \`$want_commit\` (tag \`${LOCK[source.tag]}\`)"
+	echo "- Build warnings: $n_warn; build errors: $n_err"
+	echo
+	echo "## Toolchain and machine"
+	echo
+	echo "| | |"
+	echo "|---|---|"
+	echo "| Compiler | $(gcc --version | head -n1) |"
+	echo "| Linker | $(ld --version | head -n1) |"
+	echo "| Make | $(make --version | head -n1) |"
+	echo "| flex / bison | $(flex --version | head -n1) / $(bison --version | head -n1) |"
+	echo "| zstd | $(zstd --version | head -n1 | tr -d '*' | sed 's/^ *//') |"
+	echo "| OS | $(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") |"
+	echo "| CPU | $cpu_model, $jobs jobs |"
+	echo "| Memory | ${mem_gb} GB |"
+	echo
+	echo "## Duration and resources"
+	echo
+	echo "| | |"
+	echo "|---|---|"
+	echo "| Configuration (defconfig + fragment + checks) | $(fmt_s "$t_config") |"
+	echo "| Compile (vmlinux, bzImage, modules) | $(fmt_s "$t_build") |"
+	echo "| modules_install | $(fmt_s "$t_mod") |"
+	echo "| Total | $(fmt_s "$t_total") |"
+	[ -n "$peak_kb" ] && echo "| Peak memory of the largest single build process | $((peak_kb / 1024)) MB |"
+	echo "| Build tree on disk | ${disk_mb} MB |"
+	echo
+	echo "## Size (for later comparison; no comparison with other kernels has been made)"
+	echo
+	echo "| | |"
+	echo "|---|---|"
+	echo "| bzImage (compressed, zstd) | $sz_bz bytes ($((sz_bz / 1024)) KiB) |"
+	echo "| vmlinux (uncompressed ELF, includes symbols) | $sz_vml bytes |"
+	echo "| vmlinux text / data / bss | $k_text / $k_data / $k_bss bytes |"
+	echo "| Loadable modules | $n_zst files, $sz_mods bytes ($((sz_mods / 1024)) KiB) compressed |"
+	echo "| Built-in modules (modules.builtin) | $n_builtin |"
+	echo "| Settings =y / =m in the final config | $n_cfg_y / $n_cfg_m |"
+	echo
+	echo "### Largest loadable modules (compressed)"
+	echo
+	echo '```'
+	find "$mods" -name '*.ko.zst' -type f -printf '%s %f\n' | sort -rn | head -n 15
+	echo '```'
+	echo
+	echo "### Built-in code by subsystem (text+data bytes of the objects before the final link; potentially expensive choices)"
+	echo
+	echo '```'
+	sub_sizes
+	echo '```'
+	echo
+	echo "### Built-in drivers, largest directories"
+	echo
+	echo '```'
+	drv_sizes
+	echo '```'
+	echo
+	echo "## Artifact checks"
+	echo
+	echo "| Result | Check | Detail |"
+	echo "|---|---|---|"
+	printf '%s\n' "${CHECK_ROWS[@]}"
+	echo
+	echo "## Integrity"
+	echo
+	echo '```'
+	(cd "$bdir" && sha256sum .config arch/x86/boot/bzImage System.map)
+	(cd "$ROOT" && sha256sum config/x86_64/xlin_defconfig)
+	echo '```'
+	echo
+	echo "The build is not claimed to be byte-reproducible: modules are signed with a key generated for each build (see docs/CONFIGURATION.md, open decisions)."
+	echo
+	echo "## Warnings (first 30 distinct)"
+	echo
+	echo '```'
+	# grep exits 1 when there is no warning at all; that is a good result, not an error
+	{ grep -iE '(^|[^a-z])warning:' "$log/build.log" || true; } | sed -E 's/^[[:space:]]+//' | sort -u | head -n 30
+	[ "$n_warn" -gt 0 ] || echo "(none)"
+	echo '```'
+} >"$rep/build-report.md"
+
+{
+	echo "status=$([ "$checks_failed" -eq 0 ] && echo ok || echo checks-failed)"
+	echo "kernel_release=$rel"
+	echo "source_commit=$want_commit"
+	echo "bzimage_bytes=$sz_bz"
+	echo "vmlinux_bytes=$sz_vml"
+	echo "modules_count=$n_zst"
+	echo "modules_bytes=$sz_mods"
+	echo "warnings=$n_warn"
+	echo "errors=$n_err"
+	echo "seconds_config=$t_config"
+	echo "seconds_build=$t_build"
+	echo "seconds_modules_install=$t_mod"
+	echo "seconds_total=$t_total"
+	echo "gcc=$(gcc --version | head -n1)"
+} >"$rep/build-report.env"
+
+# package the results the CI uploads
+cp "$bdir/arch/x86/boot/bzImage" "$out/report/bzImage"
+cp "$bdir/System.map" "$bdir/.config" "$out/report/"
+mv "$out/report/.config" "$out/report/config-final"
+tar -C "$out/staging" -cf - lib/modules | zstd -q -T0 -o "$out/report/modules-$rel.tar.zst"
+
+echo
+echo "Report: $rep/build-report.md"
+echo "Warnings: $n_warn, errors: $n_err; bzImage $sz_bz bytes; $n_zst modules, $sz_mods bytes; build $(fmt_s "$t_build")"
+[ "$checks_failed" -eq 0 ] || { echo "RESULT: FAILED ($checks_failed artifact check(s))"; exit 1; }
+echo "RESULT: OK (built and artifact-checked; NOT boot-tested)"
