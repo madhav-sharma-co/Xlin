@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Builds the REAL pinned kernel with the approved Xlin x86_64 configuration and checks
+# the artifacts. A build validation only: the kernel is NOT booted here, and the
+# uploaded files are build artifacts, not a release.
+name: Kernel build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out Xlin
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install the build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential flex bison bc libelf-dev libssl-dev zstd kmod file time
+          gcc --version | head -n1; make --version | head -n1; nproc; free -g | sed -n 2p; df -h . | tail -n1
+
+      - name: Static checks (syntax and shellcheck)
+        run: |
+          set -eu
+          files="scripts/xlin-build tests/build-negative.sh"
+          for f in $files; do bash -n "$f"; done
+          # shellcheck disable=SC2086
+          shellcheck -x $files
+
+      - name: Xlin Fetch and Xlin Verify (pinned source, strict)
+        run: |
+          ./scripts/xlin-fetch
+          ./scripts/xlin-verify --strict
+
+      - name: Build script negative tests
+        run: ./tests/build-negative.sh
+
+      - name: Xlin Build (configure, compile, install modules, check artifacts)
+        run: |
+          set -o pipefail
+          ./scripts/xlin-build --out "$PWD/build/xlin-x86_64" 2>&1 | tee build-run.log
+
+      - name: Build report
+        if: always()
+        run: |
+          if [ -f build/xlin-x86_64/report/build-report.md ]; then
+            cat build/xlin-x86_64/report/build-report.md | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No build report was produced (the build failed before it)." | tee -a "$GITHUB_STEP_SUMMARY"
+            tail -n 60 build-run.log 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
+          fi
+
+      - name: The pinned source is still unmodified
+        run: ./scripts/xlin-verify --strict >/dev/null
+
+      - name: Upload the build artifacts (not a release; not boot-tested)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xlin-kernel-build
+          path: |
+            build/xlin-x86_64/report/
+            build/xlin-x86_64/logs/
+          if-no-files-found: warn
+          retention-days: 14
