@@ -225,7 +225,7 @@ drv_sizes() {
 	echo "| Linker | $(ld --version | head -n1) |"
 	echo "| Make | $(make --version | head -n1) |"
 	echo "| flex / bison | $(flex --version | head -n1) / $(bison --version | head -n1) |"
-	echo "| zstd | $(zstd --version | head -n1) |"
+	echo "| zstd | $(zstd --version | head -n1 | tr -d '*' | sed 's/^ *//') |"
 	echo "| OS | $(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") |"
 	echo "| CPU | $cpu_model, $jobs jobs |"
 	echo "| Memory | ${mem_gb} GB |"
@@ -280,7 +280,7 @@ drv_sizes() {
 	echo
 	echo '```'
 	(cd "$bdir" && sha256sum .config arch/x86/boot/bzImage System.map)
-	sha256sum "$ROOT/config/x86_64/xlin_defconfig"
+	(cd "$ROOT" && sha256sum config/x86_64/xlin_defconfig)
 	echo '```'
 	echo
 	echo "The build is not claimed to be byte-reproducible: modules are signed with a key generated for each build (see docs/CONFIGURATION.md, open decisions)."
@@ -288,7 +288,9 @@ drv_sizes() {
 	echo "## Warnings (first 30 distinct)"
 	echo
 	echo '```'
-	grep -iE '(^|[^a-z])warning:' "$log/build.log" | sed -E 's/^[[:space:]]+//' | sort -u | head -n 30
+	# grep exits 1 when there is no warning at all; that is a good result, not an error
+	{ grep -iE '(^|[^a-z])warning:' "$log/build.log" || true; } | sed -E 's/^[[:space:]]+//' | sort -u | head -n 30
+	[ "$n_warn" -gt 0 ] || echo "(none)"
 	echo '```'
 } >"$rep/build-report.md"
 
