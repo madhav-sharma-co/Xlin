@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Settings the FINAL configuration must have, and why. Checked by scripts/xlin-config-check.
+# Format:  SYMBOL  EXPECT  # source
+# EXPECT:  y | m | ym (built in or module) | n (explicitly off) | off (off or the symbol no longer exists)
+# Source "systemd" = systemd README, section "Kernel Config Options" (https://github.com/systemd/systemd/blob/main/README);
+#          "xlin"    = a decision of this project (docs/CONFIGURATION.md).
+
+# systemd, required
+UEVENT_HELPER       off # systemd (legacy hotplug helper must stay off)
+DEVTMPFS            y   # systemd
+CGROUPS             y   # systemd
+INOTIFY_USER        y   # systemd
+SIGNALFD            y   # systemd
+TIMERFD             y   # systemd
+EPOLL               y   # systemd
+UNIX                y   # systemd
+SYSFS               y   # systemd
+PROC_FS             y   # systemd
+FHANDLE             y   # systemd
+FANOTIFY            y   # systemd (udev device watches)
+SHMEM               y   # systemd
+TMPFS               y   # systemd
+DMIID               y   # systemd (virtualization detection)
+BLK_DEV_BSG         y   # systemd
+NET_NS              y   # systemd (PrivateNetwork=)
+USER_NS             y   # systemd (PrivateUsers=)
+IPV6                y   # systemd (strongly recommended)
+SYSFS_DEPRECATED    off # systemd (udev fails with the legacy sysfs layout)
+FW_LOADER_USER_HELPER off # systemd (userspace firmware loading unsupported)
+
+# Boot path for the live system and QEMU/OVMF
+EFI                 y   # xlin: UEFI target
+EFI_STUB            y   # xlin: boot without a separate bootloader stage
+BLK_DEV_INITRD      y   # xlin: initramfs boot
+SQUASHFS            y   # xlin: live root image
+OVERLAY_FS          y   # xlin: live root overlay
+EXT4_FS             y   # xlin: root filesystem
+VFAT_FS             y   # xlin: EFI system partition
+VIRTIO_PCI          y   # xlin: QEMU
+VIRTIO_BLK          y   # xlin: QEMU disk
+VIRTIO_NET          y   # xlin: QEMU network
+BLK_DEV_NVME        y   # xlin: NVMe disks
+SATA_AHCI           y   # xlin: SATA disks
+MODULES             y   # xlin: module support
+
+# Console: a terminal-only system must show a console on a UEFI screen
+VT_CONSOLE          y   # xlin
+FB                  y   # xlin: needed by the framebuffer console
+DRM_FBDEV_EMULATION y   # xlin
+FRAMEBUFFER_CONSOLE y   # xlin
+DRM_SIMPLEDRM       y   # xlin: UEFI firmware framebuffer
+
+# Security: these must stay on
+SECURITY            y   # xlin
+SECURITY_YAMA       y   # xlin
+SECURITY_LANDLOCK   y   # xlin
+SECURITY_LOCKDOWN_LSM y # xlin
+CPU_MITIGATIONS     y   # xlin: CPU vulnerability mitigations
+RANDOMIZE_BASE      y   # xlin: KASLR
+STACKPROTECTOR_STRONG y # xlin
+HARDENED_USERCOPY   y   # xlin
+FORTIFY_SOURCE      y   # xlin
+INIT_ON_ALLOC_DEFAULT_ON y # xlin
+STRICT_DEVMEM       y   # xlin
+MODULE_SIG          y   # xlin
+
+# Diagnostics
+IKCONFIG            y   # xlin: running kernel reports its own config
+IKCONFIG_PROC       y   # xlin
+MAGIC_SYSRQ         y   # xlin
+
+# Must NOT be set: unjustified or experimental
+MODULE_SIG_FORCE    n   # xlin: open decision (see docs/CONFIGURATION.md)

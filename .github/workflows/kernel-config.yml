@@ -1,0 +1,102 @@
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Checks the Xlin Kernel configuration against the REAL pinned kernel source using the
+# real kernel configuration tools. It configures only: the kernel is never compiled here.
+name: Kernel configuration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  arch-reference:
+    # Informational reference only: fetch Arch Linux's LTS kernel config for comparison.
+    # It is never committed and never copied into xlin_defconfig.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container: archlinux:latest
+    steps:
+      - name: Get the Arch linux-lts config
+        run: |
+          set -eu
+          pacman -Syu --noconfirm --needed linux-lts-headers
+          cfg=$(ls /usr/lib/modules/*/build/.config | head -n1)
+          mkdir -p ref
+          cp "$cfg" ref/arch-linux-lts.config
+          { echo "package: $(pacman -Q linux-lts-headers)"; echo "file: $cfg"; } | tee ref/arch-linux-lts.info
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-reference
+          path: ref/
+
+  config:
+    needs: arch-reference
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out Xlin
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install the kernel configuration tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential flex bison bc libelf-dev libssl-dev
+          git --version; make --version | head -n1; gcc --version | head -n1; flex --version; bison --version | head -n1
+
+      - name: Static checks (syntax and shellcheck)
+        run: |
+          set -eu
+          files="scripts/xlin-config-check tests/config-negative.sh"
+          for f in $files; do bash -n "$f"; done
+          # shellcheck disable=SC2086
+          shellcheck -x $files
+
+      - name: Xlin Fetch and Verify (pinned source)
+        run: |
+          ./scripts/xlin-fetch
+          ./scripts/xlin-verify --strict
+
+      - name: Download the Arch reference
+        uses: actions/download-artifact@v4
+        with:
+          name: arch-reference
+          path: ref
+
+      - name: Config check, static mode
+        run: ./scripts/xlin-config-check --static
+
+      - name: Config check negative tests
+        run: ./tests/config-negative.sh
+
+      - name: Config check, full mode (real kconfig)
+        run: |
+          set -o pipefail
+          ./scripts/xlin-config-check --full --report report --arch-ref ref/arch-linux-lts.config | tee full.log
+          {
+            echo '### Xlin Config Check (full)'; echo '```'; cat full.log; echo '```'
+            echo '### Arch reference'; echo '```'; cat ref/arch-linux-lts.info; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Show the differences (from the upstream defconfig, and from the Arch reference)
+        run: |
+          {
+            echo '### Differences from the upstream x86_64 defconfig'; echo '```'; cat report/delta.txt; echo '```'
+            echo '### Fragment settings that differ from the Arch reference'; echo '```'; cat report/arch-comparison.txt; echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Pinned source is still unmodified
+        run: ./scripts/xlin-verify --strict >/dev/null
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kernel-config-report
+          path: report/

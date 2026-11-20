@@ -9,7 +9,7 @@ SPDX-License-Identifier: CC-BY-4.0
 
 Xlin is not a rewrite of Linux and does not hide its origin. The source is the Linux kernel; upstream history, copyright and licensing notices are preserved.
 
-> **Status: source foundation only.** The upstream source is pinned and verifiable. There is no kernel build, configuration or package yet, and nothing has been built or boot-tested. See [CHANGELOG.md](CHANGELOG.md).
+> **Status: source and configuration only.** The upstream source is pinned and verifiable and a first x86_64 configuration exists and passes the real kconfig checks. The kernel has not been built, packaged or boot-tested. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Xlin Source Pin
 
@@ -27,6 +27,16 @@ Xlin is not a rewrite of Linux and does not hide its origin. The source is the L
 
 Needs `git`, and `gpg` for the signature check. See [docs/SOURCE-MANAGEMENT.md](docs/SOURCE-MANAGEMENT.md) for what each check proves and the difference between source identity and authenticated provenance.
 
+## Xlin Kernel configuration
+
+[`config/x86_64/xlin_defconfig`](config/x86_64/xlin_defconfig) is a documented fragment over the pinned release's upstream x86_64 defconfig, for UEFI desktop/laptop systems with QEMU + OVMF first.
+
+    scripts/xlin-config-check --static    # fast checks
+    scripts/xlin-config-check --full      # real kconfig (needs make, gcc, flex, bison)
+    tests/config-negative.sh              # broken configs must be rejected
+
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [config/x86_64/README.md](config/x86_64/README.md).
+
 ## Plan for Xlin Kernel 0.1
 
 | Item | Decision |
@@ -34,7 +44,7 @@ Needs `git`, and `gpg` for the signature check. See [docs/SOURCE-MANAGEMENT.md](
 | Upstream | Linux 6.18 LTS, pinned as above |
 | Targets | x86_64 UEFI systems and QEMU virtual machines |
 | Source in this repository | References and pins only; no copy of the Linux source tree |
-| Xlin changes | Config fragments and patch files, kept apart from upstream (planned) |
+| Xlin changes | Config fragment (done); patch files, kept apart from upstream (planned) |
 | Release identity | `uname -r` will read `<upstream version>-xlin0.1`; `uname -s` stays `Linux` (planned) |
 | Packaging | Arch package `linux-xlin` for XlinOS (planned) |
 | Boot chain for XlinOS | UEFI -> existing bootloader -> Xlin Kernel -> initramfs -> systemd -> XlinOS terminal |
@@ -50,6 +60,7 @@ Needs `git`, and `gpg` for the signature check. See [docs/SOURCE-MANAGEMENT.md](
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): what exists and what is planned.
 - [docs/SOURCE-MANAGEMENT.md](docs/SOURCE-MANAGEMENT.md): the source pin, Xlin Fetch and Xlin Verify.
+- [docs/CONFIGURATION.md](docs/CONFIGURATION.md): the kernel configuration, its decisions and open questions.
 - [docs/LICENSING.md](docs/LICENSING.md): licences, file by file.
 
 ## Licensing
