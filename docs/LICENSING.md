@@ -32,8 +32,8 @@ These two licences cannot be combined in a single work. Xlin keeps them apart: t
 
 | Files | Licence | Why |
 |---|---|---|
-| `scripts/xlin-fetch`, `scripts/xlin-verify`, `scripts/xlin-config-check`, `scripts/lib/xlin-lock.sh`, `tests/negative.sh`, `tests/config-negative.sh` | `GPL-3.0-or-later` | Independently written tooling |
-| `.github/workflows/source-verification.yml`, `.github/workflows/kernel-config.yml`, `.gitignore` | `GPL-3.0-or-later` | Repository tooling and configuration |
+| `scripts/xlin-fetch`, `scripts/xlin-verify`, `scripts/xlin-config-check`, `scripts/xlin-build`, `scripts/lib/xlin-lock.sh`, `tests/negative.sh`, `tests/config-negative.sh`, `tests/build-negative.sh` | `GPL-3.0-or-later` | Independently written tooling |
+| `.github/workflows/source-verification.yml`, `.github/workflows/kernel-config.yml`, `.github/workflows/kernel-build.yml`, `.gitignore` | `GPL-3.0-or-later` | Repository tooling and configuration |
 | `upstream/UPSTREAM.lock` | `GPL-3.0-or-later` | Configuration read by the GPL-3.0-or-later scripts |
 | `config/x86_64/xlin_defconfig`, `config/x86_64/requirements.txt` | `GPL-2.0-only` | Kernel configuration written against the GPL-2.0 kernel's Kconfig; see "Kernel configuration files" below |
 | `README.md`, `CHANGELOG.md`, `docs/*.md`, `config/x86_64/README.md` | `CC-BY-4.0` | Original documentation |
@@ -57,6 +57,10 @@ Provenance of `config/x86_64/xlin_defconfig` and `requirements.txt`:
 The files are marked `GPL-2.0-only`, the licence of the code whose options they configure, so that no incompatibility can arise when they are combined with kernel build files. The choice is conservative, not a legal conclusion.
 
 **Licensing uncertainty, flagged:** whether a list of option names and values is a copyrightable work, and whether a configuration of GPL code is a derivative of it, is not settled by this project and was not reviewed by a lawyer. Option names are facts defined by the kernel; many settings are identical in every distribution's config, so overlap with Arch's config is expected and says nothing about copying. If the reference comparison ever leads to adopting a setting on Arch's evidence, the adoption will be recorded here with the setting. The upstream licence is not changed or overridden, and the scripts under `GPL-3.0-or-later` contain no kernel text: they read symbol names from the fetched tree at run time and run the kernel's own tools as separate programs.
+
+## Built kernel artifacts
+
+The "Kernel build" workflow uploads a compiled `bzImage`, `System.map`, a modules archive and the final `.config` as CI artifacts. They are builds of the unmodified Linux source under `GPL-2.0-only` (with the `Linux-syscall-note` for user-space headers) and carry that licence; the kernel's own copyright notices and licence texts stay in the pinned source. The corresponding source is the pinned upstream commit named in `upstream/UPSTREAM.lock` plus this repository (the configuration and scripts, no kernel patches). The artifacts are build outputs for validation, not a release or a distribution; before any release, the source-offer and notice obligations for distributing the binaries must be satisfied and reviewed. The build adds no third-party code: it uses only the pinned source and the standard GNU toolchain.
 
 ## Third-party material
 

@@ -9,7 +9,7 @@ SPDX-License-Identifier: CC-BY-4.0
 
 Xlin is not a rewrite of Linux and does not hide its origin. The source is the Linux kernel; upstream history, copyright and licensing notices are preserved.
 
-> **Status: source and configuration only.** The upstream source is pinned and verifiable and a first x86_64 configuration exists and passes the real kconfig checks. The kernel has not been built, packaged or boot-tested. See [CHANGELOG.md](CHANGELOG.md).
+> **Status: first build, not tested.** The upstream source is pinned and verifiable, a first x86_64 configuration exists, and the kernel compiles from it in CI (Linux 6.18.64, `6.18.64-xlin`). **It has not been booted or tested**, and it is not packaged or released. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Xlin Source Pin
 
@@ -37,6 +37,12 @@ Needs `git`, and `gpg` for the signature check. See [docs/SOURCE-MANAGEMENT.md](
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [config/x86_64/README.md](config/x86_64/README.md).
 
+## Xlin Kernel build
+
+    scripts/xlin-build                    # build the pinned source with the approved configuration (build validation only)
+
+Results, measurements and the checks are in [docs/BUILD.md](docs/BUILD.md).
+
 ## Plan for Xlin Kernel 0.1
 
 | Item | Decision |
@@ -61,6 +67,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [config/x86_64/README.md]
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): what exists and what is planned.
 - [docs/SOURCE-MANAGEMENT.md](docs/SOURCE-MANAGEMENT.md): the source pin, Xlin Fetch and Xlin Verify.
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md): the kernel configuration, its decisions and open questions.
+- [docs/BUILD.md](docs/BUILD.md): the first build, its measurements and checks.
 - [docs/LICENSING.md](docs/LICENSING.md): licences, file by file.
 
 ## Licensing

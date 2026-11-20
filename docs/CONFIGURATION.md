@@ -74,7 +74,7 @@ Anything Arch enables that Xlin does not (Wi-Fi, Bluetooth, sound, many more dri
 
 Toolchain used in CI: GCC 13.3.0 (Ubuntu 24.04), GNU Make 4.3, flex and bison from Ubuntu. Some Kconfig symbols depend on the compiler, so a different toolchain can give a different final config; the recorded toolchain is part of the evidence.
 
-**Not verified**: that the kernel compiles with this configuration, that it boots, and that any physical hardware works. Those are later steps. No claim of hardware support is made beyond "the driver is enabled".
+The kernel compiles with this configuration (see [BUILD.md](BUILD.md)). **Not verified**: that it boots, and that any physical hardware works. Those are later steps. No claim of hardware support is made beyond "the driver is enabled".
 
 ## Open decisions
 
