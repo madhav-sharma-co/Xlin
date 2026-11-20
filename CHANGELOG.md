@@ -20,7 +20,7 @@ All notable changes to Xlin are recorded here. The format follows [Keep a Change
 - `scripts/xlin-config-check` (static and full real-kconfig modes), `tests/config-negative.sh` and the "Kernel configuration" workflow, which also compares against Arch's `linux-lts` config as an informational reference.
 - `LICENSES/GPL-2.0-only.txt` and the provenance record for configuration files in `docs/LICENSING.md`.
 
-- Xlin Build (`scripts/xlin-build`), `tests/build-negative.sh`, the "Kernel build" workflow and `docs/BUILD.md`: the pinned Linux 6.18.64 compiles with the approved configuration (`6.18.64-xlin`; bzImage 11.9 MiB; 39 modules, 9.5 MiB; 0 warnings; 12 min on 4 vCPUs). Build validation only: not booted, not a release.
+- Xlin Build (`scripts/xlin-build`), `tests/build-negative.sh`, the "Kernel build" workflow and `docs/BUILD.md`: the pinned Linux 6.18.64 compiles with the approved configuration (`6.18.64-xlin`; bzImage 11.9 MiB; 39 modules, 9.5 MiB; 0 warnings; 12-15 min on 4 vCPUs). Build validation only: not booted, not a release.
 
 ### Fixed
 - Found by the first real kconfig run: upstream's defconfig has no framebuffer, so the console group needed `FB` and `DRM_FBDEV_EMULATION`; the legacy uevent helper is now turned off through `UEVENT_HELPER` (its path symbol does not exist otherwise).

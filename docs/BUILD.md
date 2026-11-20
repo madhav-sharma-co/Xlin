@@ -29,7 +29,7 @@ These are reference points for later comparison. **No comparison with any other 
 
 | Measurement | Value |
 |---|---|
-| Compile time (4 jobs) | 12 min 09 s (total with configuration and module install: 12 min 48 s) |
+| Compile time (4 jobs) | 12 min 09 s in the run above; 12 min 09 s and 14 min 32 s in the two other full runs. Expect 12-15 min on a shared runner (total with configuration and module install: about 1 min more) |
 | Peak memory of the largest single build process | 918 MB |
 | Build tree on disk | 1,242 MB |
 | `bzImage` (zstd-compressed, EFI stub) | 12,174,336 bytes (11.9 MiB) |
@@ -38,7 +38,7 @@ These are reference points for later comparison. **No comparison with any other 
 | Built-in modules | 358 |
 | Settings `=y` / `=m` in the final config | 1,746 / 41 |
 
-The `bzImage` hash and the module sizes differ slightly between two runs (build timestamp and a per-build module signing key); the `.config` and `System.map` were identical in both. The build is therefore **not** claimed to be byte-reproducible.
+Across the three full runs the `bzImage` size, `.config`, warning count (0) and peak memory were identical. The `bzImage` hash and the module sizes differ slightly between runs (build timestamp and a per-build module signing key); the `.config` and `System.map` were identical in both. The build is therefore **not** claimed to be byte-reproducible.
 
 ### Potentially expensive configuration choices
 
