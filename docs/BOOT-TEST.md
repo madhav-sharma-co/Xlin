@@ -17,8 +17,8 @@ The first runtime test of the Xlin Kernel: the kernel built by CI ([BUILD.md](BU
 
 | | |
 |---|---|
-| Boot result | **PASS**, in two independent CI runs |
-| Evidence | GitHub Actions runs [44898422683](https://github.com/madhav-sharma-co/Xlin/actions/runs/44898422683) and [44900135792](https://github.com/madhav-sharma-co/Xlin/actions/runs/44900135792) ("Kernel build", job "boot-test"); each run builds the kernel afresh, so the two `bzImage` files differ in hash (`3a3ceed7…` and `784867c5…`) |
+| Boot result | **PASS**, in three independent CI runs |
+| Evidence | GitHub Actions runs [44898422683](https://github.com/madhav-sharma-co/Xlin/actions/runs/44898422683), [44900135792](https://github.com/madhav-sharma-co/Xlin/actions/runs/44900135792) and [44902338234](https://github.com/madhav-sharma-co/Xlin/actions/runs/44902338234) ("Kernel build", job "boot-test"); each run builds the kernel afresh, so the three `bzImage` files have different hashes (`3a3ceed7…`, `784867c5…` and `9f7b6b44…`) while having the same size, and each boot job first checks the downloaded file against the hash in its own build report |
 | Kernel | Linux 6.18.64, release `6.18.64-xlin`, commit `fd7cfd39c88596fec816639ad83cbf3e9d316372`; `bzImage` 12,174,336 bytes |
 | Firmware | OVMF from Ubuntu package `ovmf 2024.02-2ubuntu0.10` (`OVMF_CODE_4M.fd`); the guest log says `efi: EFI v2.7 by Ubuntu distribution of EDK II`, `Secure boot disabled` |
 | QEMU | 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18) |
@@ -26,8 +26,8 @@ The first runtime test of the Xlin Kernel: the kernel built by CI ([BUILD.md](BU
 | `/init` executed | Yes (`Run /init as init process`, then its banner, PID 1) |
 | Serial shell reached | Yes: BusyBox `ash` answered a command the harness made up at random (`$((380*501))` -> `190380`) |
 | Success signal and exit | `XLIN-BOOT-TEST-RESULT: PASS`, guest powered off, **QEMU exit status 0** |
-| Duration | 3.5 s from QEMU start to exit, in both runs (first kernel message at 1.7 s, `/init` at 3.3-3.4 s; the kernel's own clock says `/init` started at about 1.55 s). This includes firmware start-up and is the time for a minimal initramfs under KVM, **not a boot-speed benchmark** |
-| Negative tests | 3 of 3 real boots that must fail did fail correctly; 36 of 36 harness self-tests passed |
+| Duration | 3.5 s from QEMU start to exit, in all three runs (first kernel message at 1.7-1.8 s, `/init` at 3.3-3.4 s; the kernel's own clock says `/init` started at 1.35-1.56 s). This includes firmware start-up and is the time for a minimal initramfs under KVM, **not a boot-speed benchmark** |
+| Negative tests | In each of the three runs, 3 of 3 real boots that must fail did fail correctly and 36 of 36 harness self-tests passed |
 
 ### The shell session, as logged
 

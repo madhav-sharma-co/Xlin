@@ -22,7 +22,7 @@ All notable changes to Xlin are recorded here. The format follows [Keep a Change
 
 - Xlin Build (`scripts/xlin-build`), `tests/build-negative.sh`, the "Kernel build" workflow and `docs/BUILD.md`: the pinned Linux 6.18.64 compiles with the approved configuration (`6.18.64-xlin`; bzImage 11.9 MiB; 39 modules, 9.5 MiB; 0 warnings; 12-15 min on 4 vCPUs). Build validation only: not booted, not a release.
 
-- Xlin boot test: `scripts/xlin-initramfs`, `scripts/xlin-boot-test`, `tests/boot/` (`/init`, `xlin-pass`), `tests/boot-selftest.sh`, `tests/boot-negative.sh`, a "boot-test" job in the "Kernel build" workflow and `docs/BOOT-TEST.md`. The built kernel `6.18.64-xlin` boots under UEFI (OVMF) in QEMU, runs `/init` and reaches an interactive serial shell, exit status 0, in 3.5 s (two CI runs). QEMU only: not Xlin Boot, not physical hardware.
+- Xlin boot test: `scripts/xlin-initramfs`, `scripts/xlin-boot-test`, `tests/boot/` (`/init`, `xlin-pass`), `tests/boot-selftest.sh`, `tests/boot-negative.sh`, a "boot-test" job in the "Kernel build" workflow and `docs/BOOT-TEST.md`. The built kernel `6.18.64-xlin` boots under UEFI (OVMF) in QEMU, runs `/init` and reaches an interactive serial shell, exit status 0, in 3.5 s (three independent CI runs). QEMU only: not Xlin Boot, not physical hardware.
 - `xlin-build` records the `bzImage` SHA-256 in `build-report.env`; the boot job checks it.
 
 ### Fixed
