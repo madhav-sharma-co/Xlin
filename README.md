@@ -9,7 +9,7 @@ SPDX-License-Identifier: CC-BY-4.0
 
 Xlin is not a rewrite of Linux and does not hide its origin. The source is the Linux kernel; upstream history, copyright and licensing notices are preserved.
 
-> **Status: first build, not tested.** The upstream source is pinned and verifiable, a first x86_64 configuration exists, and the kernel compiles from it in CI (Linux 6.18.64, `6.18.64-xlin`). **It has not been booted or tested**, and it is not packaged or released. See [CHANGELOG.md](CHANGELOG.md).
+> **Status: first boot in a virtual machine.** The upstream source is pinned and verifiable, a first x86_64 configuration exists, the kernel compiles from it in CI (Linux 6.18.64, `6.18.64-xlin`), and it boots to a serial shell in QEMU + OVMF (UEFI) with a minimal initramfs. **It has not been tested on physical hardware**, is not packaged or released, and is not integrated into XlinOS. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Xlin Source Pin
 
@@ -43,6 +43,12 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [config/x86_64/README.md]
 
 Results, measurements and the checks are in [docs/BUILD.md](docs/BUILD.md).
 
+## Xlin Kernel boot test
+
+    scripts/xlin-initramfs && scripts/xlin-boot-test      # boots the built kernel in QEMU + OVMF
+
+QEMU + OVMF direct kernel boot: it tests the kernel, not Xlin Boot and not hardware. See [docs/BOOT-TEST.md](docs/BOOT-TEST.md).
+
 ## Plan for Xlin Kernel 0.1
 
 | Item | Decision |
@@ -68,6 +74,7 @@ Results, measurements and the checks are in [docs/BUILD.md](docs/BUILD.md).
 - [docs/SOURCE-MANAGEMENT.md](docs/SOURCE-MANAGEMENT.md): the source pin, Xlin Fetch and Xlin Verify.
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md): the kernel configuration, its decisions and open questions.
 - [docs/BUILD.md](docs/BUILD.md): the first build, its measurements and checks.
+- [docs/BOOT-TEST.md](docs/BOOT-TEST.md): the QEMU + OVMF boot test, its criteria and results.
 - [docs/LICENSING.md](docs/LICENSING.md): licences, file by file.
 
 ## Licensing

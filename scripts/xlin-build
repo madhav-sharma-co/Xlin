@@ -299,6 +299,7 @@ drv_sizes() {
 	echo "kernel_release=$rel"
 	echo "source_commit=$want_commit"
 	echo "bzimage_bytes=$sz_bz"
+	echo "bzimage_sha256=$(sha256sum "$bz" | cut -d' ' -f1)"
 	echo "vmlinux_bytes=$sz_vml"
 	echo "modules_count=$n_zst"
 	echo "modules_bytes=$sz_mods"

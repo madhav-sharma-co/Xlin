@@ -1,0 +1,16 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The controlled success signal of the Xlin Kernel boot test: run from the serial shell.
+# It reports the result of the checks made by /init and powers the virtual machine off
+# cleanly, so QEMU exits with status 0.
+FAILED=$(cat /tmp/xlin-failed 2>/dev/null || echo unknown)
+if [ "$FAILED" = "0" ]; then
+	echo "XLIN-BOOT-TEST-RESULT: PASS (all /init checks passed)"
+else
+	echo "XLIN-BOOT-TEST-RESULT: FAIL ($FAILED /init check(s) failed)"
+fi
+sync
+echo "XLIN-BOOT-TEST: powering off"
+poweroff -f

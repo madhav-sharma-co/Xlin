@@ -1,0 +1,442 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Xlin Boot Test: boot the Xlin Kernel in QEMU with OVMF (UEFI) and a minimal initramfs.
+
+The kernel image is loaded through QEMU's -kernel/-initrd mechanism, which OVMF (the UEFI
+firmware) turns into an EFI boot of the kernel's EFI stub. THIS DOES NOT TEST XLIN BOOT
+(a bootloader): it tests the Xlin Kernel's runtime boot in a UEFI virtual machine.
+
+The test PASSES only if all of these are shown, from the serial log and the exit status:
+the kernel started with the expected release and booted via UEFI, did not panic, saw its
+CPUs and memory, unpacked the initramfs and ran /init, reached an interactive shell on the
+serial console (proved by having it compute a random product), received the explicit
+success marker, and QEMU exited with status 0 within the time limit. A QEMU process that
+merely starts is not a pass.
+
+Exit status: 0 = PASS; 1 = the boot test FAILED; 3 = cannot run (missing input or tool).
+"""
+
+import argparse
+import hashlib
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+EXIT_FAIL = 1
+EXIT_CANT = 3
+
+# kernel messages that mean the boot has failed
+FATAL = re.compile(
+    r"Kernel panic - not syncing|BUG: |Oops: |Initramfs unpacking failed|"
+    r"Attempted to kill init|No working init found|Unable to mount root"
+)
+# the earliest meaningful error is the first line matching this
+ERROR_LINE = re.compile(
+    r"Kernel panic|BUG: |Oops: |Initramfs unpacking failed|Attempted to kill init|"
+    r"No working init|Unable to mount root|not syncing|Call Trace:|"
+    r"XLIN-BOOT-TEST: check-FAILED|XLIN-BOOT-TEST-RESULT: FAIL"
+)
+WARN_LINE = re.compile(r"(?i)\bwarn(ing)?\b|\bfailed\b|\berror\b")
+
+
+def cant(msg):
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(EXIT_CANT)
+
+
+def lock_value(key):
+    try:
+        for line in (ROOT / "upstream" / "UPSTREAM.lock").read_text().splitlines():
+            if line.startswith(key + "="):
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def is_efi_kernel(path):
+    """MZ header and a PE signature at e_lfanew: the kernel has an EFI stub (not proof it boots)."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(64)
+            if head[:2] != b"MZ" or len(head) < 64:
+                return False
+            off = int.from_bytes(head[60:64], "little")
+            f.seek(off)
+            return f.read(4) == b"PE\0\0"
+    except OSError:
+        return False
+
+
+OVMF_CANDIDATES = [
+    ("/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"),
+    ("/usr/share/OVMF/OVMF_CODE.fd", "/usr/share/OVMF/OVMF_VARS.fd"),
+    ("/usr/share/edk2/x64/OVMF_CODE.4m.fd", "/usr/share/edk2/x64/OVMF_VARS.4m.fd"),
+    ("/usr/share/edk2/ovmf/OVMF_CODE.fd", "/usr/share/edk2/ovmf/OVMF_VARS.fd"),
+    ("/usr/share/edk2-ovmf/x64/OVMF_CODE.fd", "/usr/share/edk2-ovmf/x64/OVMF_VARS.fd"),
+]
+
+
+def find_ovmf():
+    for code, vars_ in OVMF_CANDIDATES:
+        if os.path.isfile(code) and os.path.isfile(vars_):
+            return code, vars_
+    return None, None
+
+
+def tool_version(cmd):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        return (r.stdout or r.stderr).strip().splitlines()[0]
+    except (OSError, subprocess.SubprocessError, IndexError):
+        return "unknown"
+
+
+def package_version(pkg):
+    try:
+        r = subprocess.run(["dpkg-query", "-W", "-f", "${Package} ${Version}", pkg],
+                           capture_output=True, text=True, timeout=20)
+        return r.stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+class Guest:
+    """The QEMU process: a reader thread copies its serial output into a buffer and the log."""
+
+    def __init__(self, cmd, log_path, err_path):
+        self.t0 = time.monotonic()
+        self.buf = bytearray()
+        self.lock = threading.Lock()
+        self.err = open(err_path, "wb")
+        self.log = open(log_path, "wb")
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=self.err, bufsize=0)
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.reader.start()
+
+    def _read(self):
+        fd = self.proc.stdout.fileno()
+        while True:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            with self.lock:
+                self.buf += chunk
+            self.log.write(chunk)
+            self.log.flush()
+
+    def text(self):
+        with self.lock:
+            return bytes(self.buf).decode("utf-8", errors="replace").replace("\r", "")
+
+    def send(self, s):
+        try:
+            self.proc.stdin.write(s.encode())
+            self.proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            pass
+
+    def elapsed(self):
+        return time.monotonic() - self.t0
+
+    def kill(self):
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+        self.reader.join(2)
+        self.log.close()
+        self.err.close()
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Boot the Xlin Kernel in QEMU + OVMF with a minimal initramfs and check that it reaches a shell.")
+    ap.add_argument("--kernel", default=str(ROOT / "build/xlin-x86_64/report/bzImage"), help="the Xlin bzImage")
+    ap.add_argument("--initramfs", default=str(ROOT / "build/boot-test/initramfs.cpio.zst"),
+                    help="initramfs made by scripts/xlin-initramfs")
+    ap.add_argument("--expect-release", default=None,
+                    help="kernel release that must be reported (default: <pinned version>-xlin)")
+    ap.add_argument("--qemu", default="qemu-system-x86_64")
+    ap.add_argument("--ovmf-code", default=None)
+    ap.add_argument("--ovmf-vars", default=None, help="OVMF variable store; a private copy is used and the original is never modified")
+    ap.add_argument("--memory", type=int, default=1024, help="guest memory in MiB")
+    ap.add_argument("--smp", type=int, default=2, help="guest CPUs")
+    ap.add_argument("--accel", choices=["auto", "kvm", "tcg"], default="auto")
+    ap.add_argument("--timeout", type=int, default=300, help="overall limit in seconds")
+    ap.add_argument("--out", default=str(ROOT / "build/boot-test/run"), help="directory for the logs and the report")
+    args = ap.parse_args()
+
+    expect = args.expect_release
+    if not expect:
+        v = lock_value("source.version")
+        expect = f"{v}-xlin" if v else None
+    if not expect:
+        cant("cannot determine the expected kernel release; pass --expect-release")
+
+    # ---- inputs and tools ----------------------------------------------------------------
+    kernel = Path(args.kernel)
+    initramfs = Path(args.initramfs)
+    if not kernel.is_file():
+        cant(f"kernel image not found: {kernel}")
+    if not is_efi_kernel(kernel):
+        cant(f"not an EFI-bootable kernel image (no MZ/PE header): {kernel}")
+    if not initramfs.is_file() or initramfs.stat().st_size == 0:
+        cant(f"initramfs not found or empty: {initramfs}")
+    qemu = shutil.which(args.qemu) if os.sep not in args.qemu else (args.qemu if os.access(args.qemu, os.X_OK) else None)
+    if not qemu:
+        cant(f"QEMU not found: {args.qemu} (install qemu-system-x86)")
+    code, vars_ = args.ovmf_code, args.ovmf_vars
+    if not code or not vars_:
+        code, vars_ = find_ovmf()
+    if not code or not vars_ or not os.path.isfile(code) or not os.path.isfile(vars_):
+        cant("OVMF firmware not found (install ovmf, or pass --ovmf-code and --ovmf-vars)")
+    if args.timeout < 1 or args.memory < 64 or args.smp < 1:
+        cant("--timeout, --memory and --smp must be positive (memory at least 64)")
+
+    accel = args.accel
+    if accel == "auto":
+        accel = "kvm" if os.access("/dev/kvm", os.R_OK | os.W_OK) else "tcg"
+    if accel == "kvm" and not os.access("/dev/kvm", os.R_OK | os.W_OK):
+        cant("--accel kvm requested but /dev/kvm is not usable")
+
+    out = Path(args.out)
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    vars_copy = out / "OVMF_VARS.copy.fd"
+    shutil.copyfile(vars_, vars_copy)  # the firmware's variable store is private to this run
+
+    cmdline = (f"console=ttyS0,115200 loglevel=7 panic=-1 rdinit=/init "
+               f"xlin.expect_release={expect}")
+    cmd = [
+        qemu, "-machine", f"q35,accel={accel}", "-cpu", "host" if accel == "kvm" else "max",
+        "-m", str(args.memory), "-smp", str(args.smp),
+        "-display", "none", "-monitor", "none", "-serial", "stdio", "-no-reboot", "-nic", "none",
+        "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={code}",
+        "-drive", f"if=pflash,format=raw,unit=1,file={vars_copy}",
+        "-kernel", str(kernel), "-initrd", str(initramfs), "-append", cmdline,
+    ]
+    (out / "qemu-command.txt").write_text(" ".join(cmd) + "\n")
+
+    qemu_version = tool_version([qemu, "--version"])
+    print("Xlin Boot Test (QEMU + OVMF, direct kernel boot; this does not test Xlin Boot)")
+    print(f"  kernel:    {kernel} ({kernel.stat().st_size} bytes, sha256 {sha256(kernel)})")
+    print(f"  initramfs: {initramfs} ({initramfs.stat().st_size} bytes)")
+    print(f"  expected:  release {expect}")
+    print(f"  QEMU:      {qemu_version}")
+    print(f"  OVMF:      {code} ({package_version('ovmf')})")
+    print(f"  VM:        q35, accel={accel}, {args.smp} vCPUs, {args.memory} MiB, timeout {args.timeout}s")
+
+    # ---- run ------------------------------------------------------------------------------------
+    try:
+        g = Guest(cmd, out / "serial.log", out / "qemu-stderr.log")
+    except OSError as e:
+        cant(f"cannot start QEMU: {e}")
+
+    A, B = secrets.randbelow(900) + 100, secrets.randbelow(900) + 100
+    product = A * B
+    marks = {}          # name -> seconds since start
+    state = "boot"      # boot -> proof -> pass -> exit
+    fatal_at = None
+    deadline = time.monotonic() + args.timeout
+    timed_out = False
+    shell_proof = False
+    started_ok = False
+    exit_wait_until = None
+
+    def mark(name, cond, text):
+        if name not in marks and cond(text):
+            marks[name] = g.elapsed()
+
+    while True:
+        text = g.text()
+        mark("kernel", lambda t: "Linux version " in t, text)
+        mark("efi", lambda t: "efi: EFI v" in t, text)
+        mark("run_init", lambda t: "Run /init as init process" in t, text)
+        mark("init_begin", lambda t: "XLIN-BOOT-TEST: BEGIN" in t, text)
+        mark("shell_ready", lambda t: "XLIN-BOOT-TEST: SHELL-READY" in t, text)
+        mark("pass_marker", lambda t: "XLIN-BOOT-TEST-RESULT: PASS" in t, text)
+        if not started_ok and g.elapsed() > 1 and g.proc.poll() is None:
+            started_ok = True
+
+        if fatal_at is None and FATAL.search(text):
+            fatal_at = time.monotonic() + 3  # let the trace finish, then stop
+        if fatal_at is not None and time.monotonic() >= fatal_at:
+            break
+
+        if state == "boot" and "shell_ready" in marks:
+            g.send(f"echo XLIN-SHELL-PROOF $(({A}*{B}))\n")
+            marks["proof_sent"] = g.elapsed()
+            state = "proof"
+        elif state == "proof":
+            if re.search(rf"^XLIN-SHELL-PROOF {product}$", text, re.M):
+                shell_proof = True
+                marks["shell_proof"] = g.elapsed()
+                g.send("xlin-pass\n")
+                state = "exit"
+                exit_wait_until = time.monotonic() + 30
+        if g.proc.poll() is not None:
+            break
+        now = time.monotonic()
+        if state == "exit" and now > exit_wait_until:
+            break
+        if now > deadline:
+            timed_out = True
+            break
+        time.sleep(0.05)
+
+    # QEMU may still be flushing: give a clean exit a moment
+    try:
+        rc = g.proc.wait(timeout=3) if g.proc.poll() is None and state == "exit" else g.proc.poll()
+    except subprocess.TimeoutExpired:
+        rc = None
+    exited_by_itself = rc is not None
+    g.kill()
+    if rc is None:
+        rc = g.proc.returncode
+    marks["end"] = g.elapsed()
+    text = g.text()
+    lines = text.split("\n")
+
+    # ---- evaluate --------------------------------------------------------------------------------
+    results = []
+
+    def crit(name, ok, detail=""):
+        results.append((name, bool(ok), detail))
+
+    rel_re = re.compile(r"Linux version (\S+)")
+    m = rel_re.search(text)
+    got_release = m.group(1) if m else None
+    panic = FATAL.search(text)
+    crit("QEMU started and ran", started_ok or exited_by_itself, qemu_version)
+    crit("kernel started with the expected release", got_release == expect, f"log says {got_release!r}, expected {expect!r}")
+    crit("booted through UEFI (OVMF)", "efi: EFI v" in text and "XLIN-BOOT-TEST: check-ok booted-via-uefi" in text,
+         "kernel log 'efi: EFI v...' and /sys/firmware/efi present in the guest")
+    crit("no kernel panic, oops or BUG", not panic, panic.group(0) if panic else "none seen")
+    mem = re.search(r"Memory: \d+K/\d+K available", text)
+    cpus = re.search(r"smp: Brought up \d+ nodes?, (\d+) CPUs?", text)
+    crit("memory initialised (kernel log)", mem, mem.group(0) if mem else "no 'Memory:' line")
+    crit("CPUs brought up (kernel log)", cpus, cpus.group(0) if cpus else "no 'smp: Brought up' line")
+    crit("initramfs unpacked", "Unpacking initramfs" in text and "Initramfs unpacking failed" not in text,
+         "kernel log 'Unpacking initramfs...'")
+    crit("/init executed", "Run /init as init process" in text and "XLIN-BOOT-TEST: BEGIN" in text, "kernel 'Run /init' and the /init banner")
+    ready = re.search(r"XLIN-BOOT-TEST: SHELL-READY failed=(\d+)", text)
+    crit("/init checks passed", ready and ready.group(1) == "0", f"failed={ready.group(1)}" if ready else "no SHELL-READY line")
+    crit("interactive shell reached over the serial console", shell_proof, f"the shell computed {A}*{B}={product}" if shell_proof else "no answer from the shell")
+    crit("explicit success marker", "XLIN-BOOT-TEST-RESULT: PASS" in text, "XLIN-BOOT-TEST-RESULT: PASS")
+    crit("QEMU exited cleanly with status 0", exited_by_itself and rc == 0, f"exit status {rc}" if exited_by_itself else "had to be stopped")
+    crit("finished within the time limit", not timed_out, f"{marks['end']:.1f}s of {args.timeout}s")
+    passed = all(ok for _, ok, _ in results)
+
+    # ---- classify a failure ------------------------------------------------------------------------
+    stage = ("init-banner" if "init_begin" in marks else "run-init" if "run_init" in marks
+             else "kernel" if "kernel" in marks else "none")
+    first_err = next(((i + 1, l) for i, l in enumerate(lines) if ERROR_LINE.search(l)), None)
+    if passed:
+        classification = "none"
+    elif exited_by_itself and rc != 0 and stage == "none" and not text.strip():
+        classification = "harness: QEMU failed to start (see qemu-stderr.log)"
+    elif stage == "none":
+        classification = "firmware: OVMF/UEFI never started the kernel (no kernel output)"
+    elif first_err and "Run /init" not in text and stage == "kernel":
+        classification = "kernel: failed before running /init"
+    elif got_release and got_release != expect:
+        classification = "test-harness: the kernel under test is not the expected release"
+    elif "Attempted to kill init" in text or "Initramfs unpacking failed" in text or (stage == "run-init"):
+        classification = "initramfs: /init did not start or died"
+    elif first_err and stage in ("run-init", "init-banner") and panic:
+        classification = "kernel or initramfs: panic after /init started"
+    elif stage == "init-banner" and not shell_proof:
+        classification = "initramfs or serial console: /init ran but no interactive shell answered"
+    elif timed_out:
+        classification = f"timeout: no failure seen; the boot did not finish (reached stage '{stage}')"
+    else:
+        classification = f"test: a criterion failed (reached stage '{stage}')"
+
+    warn_lines = []
+    for l in lines:
+        if WARN_LINE.search(l) and l.strip() and l not in warn_lines and "XLIN-BOOT-TEST" not in l:
+            warn_lines.append(l.strip())
+
+    # ---- report -------------------------------------------------------------------------------------
+    def t(name):
+        return f"{marks[name]:.1f} s" if name in marks else "not reached"
+
+    run_init_k = re.search(r"\[\s*([\d.]+)\] Run /init as init process", text)
+    uptime = re.search(r"XLIN-BOOT-TEST: uptime=([\d.]+)s", text)
+    cpu_model = re.search(r"XLIN-BOOT-TEST: cpu-model=(.*)", text)
+    mem_kb = re.search(r"XLIN-BOOT-TEST: mem-total-kb=(\d+)", text)
+    cpu_n = re.search(r"XLIN-BOOT-TEST: cpu-count=(\d+)", text)
+    rep = ["# Xlin Kernel boot test report", "",
+           "**QEMU + OVMF direct kernel boot. This does not test Xlin Boot, physical hardware or production readiness.**", "",
+           f"## Result: {'PASS' if passed else 'FAIL'}", ""]
+    if not passed:
+        rep += [f"- Classification: **{classification}**", f"- Earliest meaningful error: "
+                + (f"line {first_err[0]} of serial.log: `{first_err[1].strip()}`" if first_err else "none found in the log"), ""]
+    rep += ["| Result | Criterion | Detail |", "|---|---|---|"]
+    rep += [f"| {'PASS' if ok else 'FAIL'} | {n} | {d} |" for n, ok, d in results]
+    rep += ["", "## Environment", "", "| | |", "|---|---|",
+            f"| Kernel image | `{kernel.name}`, {kernel.stat().st_size} bytes, sha256 `{sha256(kernel)}` |",
+            f"| Kernel release (guest) | `{got_release}` |",
+            f"| Initramfs | {initramfs.stat().st_size} bytes, sha256 `{sha256(initramfs)}` |",
+            f"| QEMU | {qemu_version} |",
+            f"| OVMF | `{code}`, package: {package_version('ovmf')}, sha256 `{sha256(code)}` |",
+            f"| VM | q35, accel={accel}, {args.smp} vCPUs, {args.memory} MiB RAM |",
+            f"| Guest CPU | {cpu_model.group(1).strip() if cpu_model else 'not reported'}, {cpu_n.group(1) if cpu_n else '?'} CPUs |",
+            f"| Guest memory (MemTotal) | {int(mem_kb.group(1)) // 1024 if mem_kb else '?'} MiB |",
+            f"| Kernel command line | `{cmdline}` |",
+            "", "## Timing (seconds since QEMU was started; includes firmware time)", "", "| | |", "|---|---|",
+            f"| First kernel message | {t('kernel')} |", f"| `Run /init` | {t('run_init')} (kernel clock: {run_init_k.group(1) + ' s' if run_init_k else 'n/a'}) |",
+            f"| /init banner | {t('init_begin')} (guest uptime {uptime.group(1) + ' s' if uptime else 'n/a'}) |",
+            f"| Shell ready | {t('shell_ready')} |", f"| Shell answered | {t('shell_proof')} |",
+            f"| Success marker | {t('pass_marker')} |", f"| QEMU exited | {t('end')} |",
+            "", f"## Kernel log lines mentioning warning/failed/error ({len(warn_lines)}, first 25)", "", "```"]
+    rep += warn_lines[:25] + ["```", "", "Full log: `serial.log`; QEMU command: `qemu-command.txt`; QEMU errors: `qemu-stderr.log`."]
+    (out / "report.md").write_text("\n".join(rep) + "\n")
+    (out / "result.env").write_text(
+        f"status={'pass' if passed else 'fail'}\nclassification={classification}\nkernel_release={got_release}\n"
+        f"accel={accel}\nseconds_total={marks['end']:.1f}\nseconds_run_init={marks.get('run_init', -1):.1f}\n"
+        f"seconds_shell_ready={marks.get('shell_ready', -1):.1f}\nqemu_exit={rc}\n")
+
+    print()
+    for n, ok, d in results:
+        print(f"{'PASS' if ok else 'FAIL'}  {n}: {d}")
+    print()
+    print(f"Logs: {out}/serial.log, report: {out}/report.md")
+    if passed:
+        print(f"RESULT: PASS (Xlin Kernel {got_release} reached a serial shell in QEMU + OVMF, accel={accel}, {marks['end']:.1f}s)")
+        return 0
+    print(f"RESULT: FAIL, classification: {classification}")
+    if first_err:
+        print(f"Earliest meaningful error (serial.log line {first_err[0]}): {first_err[1].strip()}")
+    print("Last log lines:")
+    for l in lines[-15:]:
+        print("   | " + l)
+    return EXIT_FAIL
+
+
+if __name__ == "__main__":
+    sys.exit(main())

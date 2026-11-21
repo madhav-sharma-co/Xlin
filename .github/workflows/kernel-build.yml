@@ -75,3 +75,115 @@ jobs:
             build/xlin-x86_64/logs/
           if-no-files-found: warn
           retention-days: 14
+
+  boot-test:
+    # Boots the kernel built by the "build" job in QEMU with OVMF (UEFI) and a minimal
+    # initramfs. Direct kernel boot: this does NOT test Xlin Boot, and QEMU success says
+    # nothing about physical hardware.
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out Xlin
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install QEMU, OVMF and BusyBox
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf busybox-static zstd file
+          qemu-system-x86_64 --version | head -n1
+          dpkg-query -W -f '${Package} ${Version}\n' ovmf qemu-system-x86 busybox-static
+          busybox 2>&1 | head -n1
+          ls -l /dev/kvm || echo "no /dev/kvm: the test will use software emulation (TCG)"
+
+      - name: Allow QEMU to use KVM when the runner has it
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+
+      - name: Static checks (syntax and shellcheck)
+        run: |
+          set -eu
+          files="scripts/xlin-initramfs tests/boot-selftest.sh tests/boot-negative.sh"
+          for f in $files; do bash -n "$f"; done
+          # shellcheck disable=SC2086
+          shellcheck -x $files
+          python3 -m py_compile scripts/xlin-boot-test
+          for f in tests/boot/init tests/boot/xlin-pass tests/boot/init-broken; do sh -n "$f"; done
+
+      - name: Xlin Fetch and Xlin Verify (pinned source, needed for gen_init_cpio)
+        run: |
+          ./scripts/xlin-fetch
+          ./scripts/xlin-verify --strict
+
+      - name: Download the kernel built by the build job
+        uses: actions/download-artifact@v4
+        with:
+          name: xlin-kernel-build
+          path: artifact
+
+      - name: The kernel under test is the one the build job reported
+        run: |
+          set -eu
+          ls -l artifact/report/
+          want=$(sed -n 's/^bzimage_sha256=//p' artifact/report/build-report.env)
+          got=$(sha256sum artifact/report/bzImage | cut -d' ' -f1)
+          echo "build report: $want"; echo "downloaded:   $got"
+          [ -n "$want" ] && [ "$want" = "$got" ]
+          grep '^kernel_release=' artifact/report/build-report.env
+
+      - name: Boot-tool self-test (simulated guest, not a boot)
+        run: ./tests/boot-selftest.sh
+
+      - name: Build the minimal initramfs
+        run: ./scripts/xlin-initramfs --out build/boot-test/initramfs.cpio.zst
+
+      - name: Boot the Xlin Kernel in QEMU + OVMF
+        run: |
+          set -o pipefail
+          ./scripts/xlin-boot-test --kernel artifact/report/bzImage --initramfs build/boot-test/initramfs.cpio.zst \
+            --out build/boot-test/run --timeout 600 2>&1 | tee boot-run.log
+
+      - name: Boot report
+        if: always()
+        run: |
+          if [ -f build/boot-test/run/report.md ]; then
+            cat build/boot-test/run/report.md | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '### Serial log (complete)' >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 400 build/boot-test/run/serial.log >> "$GITHUB_STEP_SUMMARY" || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No boot report was produced." | tee -a "$GITHUB_STEP_SUMMARY"
+            tail -n 40 boot-run.log 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
+          fi
+
+      - name: Complete serial log of the boot test
+        if: always()
+        run: |
+          echo "::group::serial.log"
+          cat build/boot-test/run/serial.log || true
+          echo "::endgroup::"
+          cat build/boot-test/initramfs.cpio.zst.manifest || true
+
+      - name: Boot negative tests (real boots that must fail)
+        run: ./tests/boot-negative.sh --kernel artifact/report/bzImage
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xlin-boot-test
+          path: |
+            build/boot-test/run/serial.log
+            build/boot-test/run/report.md
+            build/boot-test/run/result.env
+            build/boot-test/run/qemu-command.txt
+            build/boot-test/run/qemu-stderr.log
+            build/boot-test/initramfs.cpio.zst.manifest
+          if-no-files-found: warn
+          retention-days: 14
