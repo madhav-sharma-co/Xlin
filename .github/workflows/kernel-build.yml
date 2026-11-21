@@ -163,6 +163,14 @@ jobs:
             tail -n 40 boot-run.log 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
           fi
 
+      - name: Complete serial log of the boot test
+        if: always()
+        run: |
+          echo "::group::serial.log"
+          cat build/boot-test/run/serial.log || true
+          echo "::endgroup::"
+          cat build/boot-test/initramfs.cpio.zst.manifest || true
+
       - name: Boot negative tests (real boots that must fail)
         run: ./tests/boot-negative.sh --kernel artifact/report/bzImage
 
