@@ -1,0 +1,8 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# A deliberately broken /init used only by the negative tests: it exits at once, which makes
+# the kernel panic ("Attempted to kill init"). The boot test must report this as a failure.
+echo "XLIN-BOOT-TEST: broken init (negative test)"
+exit 1

@@ -1,0 +1,59 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# /init of the Xlin Kernel boot-test initramfs. It is independent of XlinOS: the only
+# userspace is BusyBox. It identifies the boot test, records basic CPU and memory
+# information, checks a few facts, and starts an interactive shell on the serial console.
+# The host harness (scripts/xlin-boot-test) then talks to that shell and ends the test
+# with /bin/xlin-pass.
+export PATH=/bin
+FAILED=0
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mount -t tmpfs tmpfs /tmp
+mount -t tmpfs tmpfs /run
+
+say() { echo "XLIN-BOOT-TEST: $*"; }
+check() { # NAME COMMAND...
+	name=$1
+	shift
+	if "$@" >/dev/null 2>&1; then
+		say "check-ok $name"
+	else
+		say "check-FAILED $name"
+		FAILED=$((FAILED + 1))
+	fi
+}
+
+say "BEGIN Xlin Kernel boot test: /init is running as PID $$"
+say "uptime=$(cut -d' ' -f1 /proc/uptime)s"
+RELEASE=$(uname -r)
+EXPECT=$(sed -n 's/.*xlin\.expect_release=\([^ ]*\).*/\1/p' /proc/cmdline)
+say "kernel-release=$RELEASE expected=${EXPECT:-none}"
+say "kernel-version=$(uname -v)"
+say "machine=$(uname -m)"
+say "cpu-model=$(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2 | sed 's/^ *//')"
+say "cpu-count=$(grep -c '^processor' /proc/cpuinfo)"
+say "mem-total-kb=$(sed -n 's/^MemTotal: *\([0-9]*\) kB.*/\1/p' /proc/meminfo)"
+say "cmdline=$(cat /proc/cmdline)"
+
+[ -n "$EXPECT" ] && check release-matches-expected [ "$RELEASE" = "$EXPECT" ]
+check proc-mounted [ -r /proc/cpuinfo ]
+check sysfs-mounted [ -d /sys/kernel ]
+check devtmpfs-mounted [ -c /dev/null ]
+check cpu-visible [ "$(grep -c '^processor' /proc/cpuinfo)" -ge 1 ]
+check memory-visible [ "$(sed -n 's/^MemTotal: *\([0-9]*\) kB.*/\1/p' /proc/meminfo)" -gt 0 ]
+check booted-via-uefi [ -d /sys/firmware/efi ]
+
+echo "$FAILED" >/tmp/xlin-failed
+# keep the serial console quiet for the shell; panics (level 0) are still printed
+echo 3 >/proc/sys/kernel/printk
+say "SHELL-READY failed=$FAILED"
+
+PS1='xlin-test# ' setsid cttyhack sh
+say "shell exited without a success signal"
+poweroff -f
+sleep 5
