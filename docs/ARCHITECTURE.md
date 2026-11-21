@@ -46,4 +46,4 @@ The lock file is the single source of truth. No version, hash or URL is hard-cod
 
 ## Scope boundaries of this stage
 
-This section describes the first stage, which only established and verified the source foundation (it did not build the kernel, change kernel source, add patches, create kernel configurations, or touch XlinOS). Later stages added the configuration ([CONFIGURATION.md](CONFIGURATION.md)) and a build validation ([BUILD.md](BUILD.md)); the kernel has still not been booted. See [SOURCE-MANAGEMENT.md](SOURCE-MANAGEMENT.md) for the details of the pin.
+This section describes the first stage, which only established and verified the source foundation (it did not build the kernel, change kernel source, add patches, create kernel configurations, or touch XlinOS). Later stages added the configuration ([CONFIGURATION.md](CONFIGURATION.md)) and a build validation ([BUILD.md](BUILD.md)); the kernel boots in a virtual machine ([BOOT-TEST.md](BOOT-TEST.md)) but has not been tested on hardware. See [SOURCE-MANAGEMENT.md](SOURCE-MANAGEMENT.md) for the details of the pin.

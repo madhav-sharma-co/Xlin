@@ -32,7 +32,7 @@ These two licences cannot be combined in a single work. Xlin keeps them apart: t
 
 | Files | Licence | Why |
 |---|---|---|
-| `scripts/xlin-fetch`, `scripts/xlin-verify`, `scripts/xlin-config-check`, `scripts/xlin-build`, `scripts/lib/xlin-lock.sh`, `tests/negative.sh`, `tests/config-negative.sh`, `tests/build-negative.sh` | `GPL-3.0-or-later` | Independently written tooling |
+| `scripts/xlin-fetch`, `scripts/xlin-verify`, `scripts/xlin-config-check`, `scripts/xlin-build`, `scripts/xlin-initramfs`, `scripts/xlin-boot-test`, `scripts/lib/xlin-lock.sh`, `tests/negative.sh`, `tests/config-negative.sh`, `tests/build-negative.sh`, `tests/boot-selftest.sh`, `tests/boot-negative.sh`, `tests/boot/init`, `tests/boot/xlin-pass`, `tests/boot/init-broken` | `GPL-3.0-or-later` | Independently written tooling |
 | `.github/workflows/source-verification.yml`, `.github/workflows/kernel-config.yml`, `.github/workflows/kernel-build.yml`, `.gitignore` | `GPL-3.0-or-later` | Repository tooling and configuration |
 | `upstream/UPSTREAM.lock` | `GPL-3.0-or-later` | Configuration read by the GPL-3.0-or-later scripts |
 | `config/x86_64/xlin_defconfig`, `config/x86_64/requirements.txt` | `GPL-2.0-only` | Kernel configuration written against the GPL-2.0 kernel's Kconfig; see "Kernel configuration files" below |
@@ -61,6 +61,19 @@ The files are marked `GPL-2.0-only`, the licence of the code whose options they 
 ## Built kernel artifacts
 
 The "Kernel build" workflow uploads a compiled `bzImage`, `System.map`, a modules archive and the final `.config` as CI artifacts. They are builds of the unmodified Linux source under `GPL-2.0-only` (with the `Linux-syscall-note` for user-space headers) and carry that licence; the kernel's own copyright notices and licence texts stay in the pinned source. The corresponding source is the pinned upstream commit named in `upstream/UPSTREAM.lock` plus this repository (the configuration and scripts, no kernel patches). The artifacts are build outputs for validation, not a release or a distribution; before any release, the source-offer and notice obligations for distributing the binaries must be satisfied and reviewed. The build adds no third-party code: it uses only the pinned source and the standard GNU toolchain.
+
+## Boot test components
+
+The boot test uses third-party programs that are **installed on the CI runner and are not part of this repository**:
+
+| Component | Use | Licence (as published by its project) |
+|---|---|---|
+| BusyBox (Ubuntu `busybox-static`) | The only userspace of the test initramfs, copied into it at build time | `GPL-2.0-only` |
+| QEMU | Runs the virtual machine | `GPL-2.0` (mostly) |
+| OVMF / EDK II (Ubuntu `ovmf`) | UEFI firmware of the virtual machine | `BSD-2-Clause-Patent` (some components under other licences) |
+| `usr/gen_init_cpio.c` from the pinned kernel source | Compiled at test time to write the initramfs; the tool is not distributed | `GPL-2.0-only` |
+
+The initramfs itself (which contains BusyBox) is a build output: it is **not committed and not uploaded**; only its manifest (sizes and hashes, BusyBox version) and the logs are. The committed test scripts are `GPL-3.0-or-later` and contain no code from these projects. If an initramfs containing BusyBox is ever distributed, BusyBox's source-offer obligations apply and must be reviewed first. The boot test uses no XlinOS or Arch material.
 
 ## Third-party material
 

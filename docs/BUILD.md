@@ -5,7 +5,7 @@ SPDX-License-Identifier: CC-BY-4.0
 
 # Xlin Kernel build
 
-This documents the **first build** of the Xlin Kernel: the pinned Linux 6.18.64 source compiled with the approved x86_64 configuration ([CONFIGURATION.md](CONFIGURATION.md)). It is a **build validation, not a release**. **The kernel has not been booted or tested**, and nothing here claims that it works on any hardware.
+This documents the **first build** of the Xlin Kernel: the pinned Linux 6.18.64 source compiled with the approved x86_64 configuration ([CONFIGURATION.md](CONFIGURATION.md)). It is a **build validation, not a release**. This page covers the build only; its booting in QEMU is documented in [BOOT-TEST.md](BOOT-TEST.md). Nothing here claims that it works on any hardware.
 
 ## Result
 
@@ -70,4 +70,4 @@ The "Kernel build" workflow does this on every pull request and push to `main` (
 
 ## What has not been done
 
-Booting, any runtime test, hardware compatibility, packaging, release, and integration into XlinOS. The artifacts uploaded by CI are build outputs, not a release.
+Hardware compatibility, packaging, release, and integration into XlinOS. (Booting in a virtual machine: see [BOOT-TEST.md](BOOT-TEST.md).) The artifacts uploaded by CI are build outputs, not a release.
