@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Informational comparison of two runtime-test results.json files (Xlin Kernel vs a baseline).
+
+It never gates anything and makes no performance or quality claim: the two kernels have different
+versions and configurations, and a shared CI runner is noisy. It only lays the measurements and
+the per-probe results side by side so that DIFFERENCES can be read and explained.
+"""
+import json
+import statistics
+import sys
+
+
+def load(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def base_runs(d):
+    return d["runs"].get("base", [])
+
+
+def med(vals):
+    return statistics.median(vals) if vals else None
+
+
+def main():
+    if len(sys.argv) != 5:
+        sys.exit("usage: xlin-runtime-compare XLIN_RESULTS.json XLIN_LABEL BASELINE_RESULTS.json BASELINE_LABEL")
+    a, la, b, lb = load(sys.argv[1]), sys.argv[2], load(sys.argv[3]), sys.argv[4]
+    ra, rb = base_runs(a), base_runs(b)
+    print("# Informational comparison (not a gate, not a quality claim)\n")
+    print(f"- {la}: kernel `{(ra[0].get('kernel_release') if ra else 'n/a')}`, accel {a.get('accel')}")
+    print(f"- {lb}: kernel `{(rb[0].get('kernel_release') if rb else 'n/a')}`, accel {b.get('accel')}")
+    print("- The kernels differ in version and configuration, and each ran in its own CI job on a shared runner:")
+    print("  differences below are NOT attributable to Xlin's choices without an identical-conditions test.\n")
+    print("## Measurements (median over boots)\n")
+    print(f"| metric | {la} | {lb} |\n|---|---|---|")
+    keys = sorted({k for r in ra + rb for k in r.get("metrics", {})})
+    for k in keys:
+        va = med([r["metrics"][k] for r in ra if k in r.get("metrics", {})])
+        vb = med([r["metrics"][k] for r in rb if k in r.get("metrics", {})])
+        print(f"| {k} | {'n/a' if va is None else f'{va:g}'} | {'n/a' if vb is None else f'{vb:g}'} |")
+    ta, tb = med([r["seconds"] for r in ra]), med([r["seconds"] for r in rb])
+    print(f"| total seconds to power-off | {ta if ta is None else f'{ta:.1f}'} | {tb if tb is None else f'{tb:.1f}'} |")
+
+    def probes(rs):
+        out = {}
+        for r in rs[:1]:
+            for t in r.get("tests", []):
+                if t["suite"] in ("hardening", "systemd"):
+                    out[f"{t['suite']}.{t['name']}"] = t["status"]
+        return out
+
+    pa, pb = probes(ra), probes(rb)
+    print("\n## Hardening and systemd probes\n")
+    print(f"| probe | {la} | {lb} |\n|---|---|---|")
+    for k in sorted(set(pa) | set(pb)):
+        print(f"| {k} | {pa.get(k, 'n/a')} | {pb.get(k, 'n/a')} |")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
