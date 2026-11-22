@@ -96,7 +96,7 @@ run 1 "the wrong kernel release fails" --scenarios base
 good_log config hardening systemd measure logscan | sed 's/^XLIN-TEST: systemd something PASS fine$/XLIN-TEST: systemd something SKIP reason given/' >"$FAKE_LOG"
 run 0 "an explained SKIP (not tested) is allowed and is not counted as a pass" --scenarios base
 
-good_log config hardening systemd measure logscan | sed 's/^XLIN-TEST: logscan something PASS fine/XLIN-TEST: logscan finding INFO [    0.449975] CPA detected W^X violation/' >"$FAKE_LOG"
+good_log config hardening systemd measure logscan | sed 's/^XLIN-TEST: logscan something PASS fine/&\nXLIN-TEST: logscan finding INFO [    0.449975] CPA detected W^X violation/' >"$FAKE_LOG"
 run 0 "an open finding does not fail the run" --scenarios base
 if grep -A3 'Open findings' "$T/out/summary.md" | grep -q 'CPA detected'; then ok "the finding is listed in the summary"; else bad "finding missing from the summary"; fi
 
