@@ -17,7 +17,7 @@ ok_n=0; nodev=0; unl_fail=0; bad=0; unsigned=0
 while read -r m; do
 	[ -n "$m" ] || continue
 	f=$(modinfo -n "$m" 2>/dev/null)
-	if [ -n "$f" ] && [ -z "$(modinfo -F signer "$m" 2>/dev/null)" ]; then unsigned=$((unsigned + 1)); fail "$m-signed" "no module signature"; fi
+	if [ -n "$f" ] && [ -z "$(modinfo -F sig_id "$m" 2>/dev/null)" ]; then unsigned=$((unsigned + 1)); fail "$m-signed" "no module signature"; fi
 	if modprobe -q "$m" 2>/tmp/err; then
 		if modprobe -r "$m" 2>/tmp/err2; then ok_n=$((ok_n + 1)); else unl_fail=$((unl_fail + 1)); info "$m-unload" "loaded but not unloaded: $(cat /tmp/err2)"; fi
 	else

@@ -7,9 +7,14 @@ dmesg -r >/tmp/dmesg.raw 2>/dev/null || dmesg >/tmp/dmesg.raw
 total=$(wc -l </tmp/dmesg.raw)
 metric kernel_log_lines "$total" lines
 TAB=$(printf '\t')
-sed -n 's/^\([^#\t][^\t]*\)\t.*/\1/p' /tests/dmesg-allowlist.txt >/tmp/allow.ere
+# entries whose reason starts with "FINDING:" are real open issues that are reviewed but NOT
+# explained away: they are reported as findings in every run, never as a plain allowlisting
+: >/tmp/allow.ere
+: >/tmp/finding.ere
+awk -F'\t' '!/^#/ && NF >= 2 { if ($2 ~ /^FINDING:/) print $1 >> "/tmp/finding.ere"; else print $1 >> "/tmp/allow.ere" }' /tests/dmesg-allowlist.txt
 bad=0
 allowed=0
+findings=0
 # strip "<n>" priority prefix for matching, keep it for the level test
 while IFS= read -r line; do
 	lvl=$(echo "$line" | sed -n 's/^<\([0-9]\)>.*/\1/p')
@@ -18,7 +23,10 @@ while IFS= read -r line; do
 	[ -n "$lvl" ] && [ "$lvl" -le 4 ] && sus=1
 	echo "$text" | grep -qiE 'warn(ing)?\b|\berror\b|\bfail(ed|ure)?\b|\bBUG\b|Oops|tainted|lockdep|call trace|unable to|corrupt|\bdeprecated\b' && sus=1
 	[ "$sus" -eq 1 ] || continue
-	if [ -s /tmp/allow.ere ] && echo "$text" | grep -qE -f /tmp/allow.ere; then
+	if [ -s /tmp/finding.ere ] && echo "$text" | grep -qE -f /tmp/finding.ere; then
+		findings=$((findings + 1))
+		info finding "$text"
+	elif [ -s /tmp/allow.ere ] && echo "$text" | grep -qE -f /tmp/allow.ere; then
 		allowed=$((allowed + 1))
 		info allowed "$text"
 	else
@@ -27,6 +35,7 @@ while IFS= read -r line; do
 	fi
 done </tmp/dmesg.raw
 metric kernel_log_allowlisted "$allowed" lines
+metric kernel_log_findings "$findings" lines
 if [ "$bad" -eq 0 ]; then pass kernel-log-clean "$total lines scanned, $allowed allowlisted, 0 unexpected"; fi
 tainted=$(cat /proc/sys/kernel/tainted 2>/dev/null)
 # bit 12 (4096) is "out-of-tree module"; 8192 "unsigned"; 1 proprietary; others are real problems

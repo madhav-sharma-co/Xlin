@@ -21,6 +21,18 @@ ok() {
 	if "$@" >/dev/null 2>&1; then pass "$_n" "$_d"; else fail "$_n" "$_d (command failed: $*)"; fi
 }
 
+# BusyBox's shell prefers its own applets for bare command names. The module tests must run the
+# kmod tools that the initramfs carries (/bin/modprobe etc. are links to /bin/kmod), so call them
+# by full path.
+if [ -x /bin/kmod ]; then
+	modprobe() { /bin/modprobe "$@"; }
+	insmod() { /bin/insmod "$@"; }
+	rmmod() { /bin/rmmod "$@"; }
+	lsmod() { /bin/lsmod "$@"; }
+	depmod() { /bin/depmod "$@"; }
+	modinfo() { /bin/modinfo "$@"; }
+fi
+
 have() { command -v "$1" >/dev/null 2>&1; }
 cmdline_get() { sed -n "s/.*[ ]$1=\([^ ]*\).*/\1/p" /proc/cmdline | head -n1; }
 

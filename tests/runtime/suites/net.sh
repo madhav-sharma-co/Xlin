@@ -13,6 +13,8 @@ while [ "$_i" -lt 15 ]; do
 	for d in /sys/class/net/*; do
 		n=${d##*/}
 		[ "$n" = lo ] && continue
+		# virtual devices (sit0, ip6tnl0 ...) have no "device" link: only a real NIC counts
+		[ -e "/sys/class/net/$n/device" ] || continue
 		iface=$n
 	done
 	[ -n "$iface" ] && break

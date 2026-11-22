@@ -520,6 +520,16 @@ def main():
                 md.append(f"- {rn}: {t['suite']}.{t['name']}: {t['detail']}")
     if not seen:
         md.append("- none")
+    md += ["", "## Open findings (reviewed kernel-log lines that are NOT explained away)", ""]
+    fseen = set()
+    for rn, rs in results.items():
+        for t in rs[0]["tests"]:
+            text = re.sub(r"^\[\s*[\d.]+\] ", "", t["detail"])
+            if t["name"] == "finding" and text not in fseen:
+                fseen.add(text)
+                md.append(f"- seen in {', '.join(k for k, v in results.items() if any(x['name'] == 'finding' and re.sub(r'^\\[\\s*[\\d.]+\\] ', '', x['detail']) == text for x in v[0]['tests']))}: `{text}`")
+    if not fseen:
+        md.append("- none")
     md += ["", "## Informational measurements (never gating)", "",
            "Medians over the boots of each run; shared CI runners are noisy, so differences of a few percent are not meaningful.", "",
            "| Run | metric | median | min | max | n |", "|---|---|---|---|---|---|"]
@@ -532,7 +542,7 @@ def main():
     for rn, rs in results.items():
         md += [f"### {rn}", "", "| Status | Check | Detail |", "|---|---|---|"]
         for t in rs[0]["tests"]:
-            if t["status"] != "INFO":
+            if t["status"] != "INFO" or t["name"] not in ("allowed", "size", "mac"):
                 md.append(f"| {t['status']} | {t['suite']}.{t['name']} | {t['detail'].replace('|', '/')[:300]} |")
         md.append("")
     (out / "summary.md").write_text("\n".join(md) + "\n")

@@ -15,10 +15,11 @@
 hardening.kaslr	special	kaslr	-	RANDOMIZE_BASE=y,RANDOMIZE_MEMORY=y	kernel text base is randomised
 hardening.dmesg_restrict	sysctl	/proc/sys/kernel/dmesg_restrict	1	SECURITY_DMESG_RESTRICT=y	unprivileged dmesg is restricted
 hardening.yama_ptrace_scope	exists	/proc/sys/kernel/yama/ptrace_scope	-	SECURITY_YAMA=y	Yama ptrace scope control exists
-hardening.lsm_yama	lsm	yama	-	SECURITY_YAMA=y	Yama is an active LSM
-hardening.lsm_landlock	lsm	landlock	-	SECURITY_LANDLOCK=y	Landlock is an active LSM
-hardening.lsm_lockdown	lsm	lockdown	-	SECURITY_LOCKDOWN_LSM=y	the lockdown LSM is active
-hardening.lockdown_mode	contains	/sys/kernel/security/lockdown	[none]	SECURITY_LOCKDOWN_LSM=y	lockdown mode is none (not enforcing; an open decision)
+hardening.lsm_yama	dmesg	LSM: initializing lsm=.*yama	-	SECURITY_YAMA=y	Yama is in the LSM list (boot log)
+hardening.lsm_landlock	dmesg	LSM: initializing lsm=.*landlock	-	SECURITY_LANDLOCK=y	Landlock is in the LSM list (boot log)
+hardening.lsm_lockdown	dmesg	LSM: initializing lsm=.*lockdown	-	SECURITY_LOCKDOWN_LSM=y	the lockdown LSM is in the LSM list (boot log)
+hardening.lsm_securityfs	lsm	yama	-	SECURITY_YAMA=y,SECURITYFS=y	/sys/kernel/security/lsm lists Yama (needs securityfs)
+hardening.lockdown_mode	contains	/sys/kernel/security/lockdown	[none]	SECURITY_LOCKDOWN_LSM=y,SECURITYFS=y	lockdown mode is none (not enforcing; an open decision)
 hardening.bpf_unprivileged_off	sysctl	/proc/sys/kernel/unprivileged_bpf_disabled	2	BPF_SYSCALL=y,BPF_UNPRIV_DEFAULT_OFF=y	unprivileged BPF is disabled
 hardening.init_on_alloc	dmesg	heap alloc:on	-	INIT_ON_ALLOC_DEFAULT_ON=y	heap allocations are zeroed (boot log)
 hardening.no_vsyscall	special	vsyscall	-	LEGACY_VSYSCALL_NONE=y	no legacy [vsyscall] page is mapped

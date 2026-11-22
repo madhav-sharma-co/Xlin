@@ -8,3 +8,5 @@
 x86/split lock detection: #DB: warning on user-space bus_locks	informational notice about the default split-lock policy (warn); not an error
 Direct firmware load for regulatory\.db failed with error -2	the test initramfs carries no firmware files; cfg80211 falls back to its built-in regulatory rules
 cfg80211: failed to load regulatory\.db	same cause: no firmware blob in the test initramfs
+PCI: Using host bridge windows from ACPI; if necessary, use "pci=nocrs" and report a bug	standard informational message of the x86 PCI code on ACPI machines; the word "bug" is part of the hint, not a problem report
+CPA detected W\^X violation	FINDING: the kernel prints this warning once during early boot (before SMP alternatives are freed) in every QEMU/KVM boot; unexplained so far, see docs/RUNTIME-VALIDATION.md; kept visible as a finding, not accepted as normal

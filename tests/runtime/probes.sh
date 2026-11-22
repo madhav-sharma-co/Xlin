@@ -18,11 +18,15 @@ special_vsyscall() {
 }
 special_devmem() {
 	[ -c /dev/mem ] || { skip "$1" "/dev/mem does not exist (CONFIG_DEVMEM off): nothing to restrict"; return; }
-	_a=$(awk '/System RAM/ { split($1,r,"-"); if (length(r[1]) >= 6 && r[1] != "00100000") { print r[1]; exit } }' /proc/iomem 2>/dev/null)
-	[ -n "$_a" ] || _a=$(sed -n 's/^\([0-9a-f]*\)-.* : System RAM$/\1/p' /proc/iomem | sed -n '2p')
-	[ -n "$_a" ] || { skip "$1" "no System RAM range found in /proc/iomem"; return; }
-	_off=$((0x$_a))
-	if dd if=/dev/mem of=/dev/null bs=1 skip=$_off count=16 2>/dev/null; then
+	# first "System RAM" range that starts at or above 1 MiB (the first MiB is deliberately readable)
+	grep 'System RAM' /proc/iomem | sed 's/^ *//; s/-.*//' >/tmp/ram.starts
+	_a=""
+	while read -r _s; do
+		[ -n "$_s" ] || continue
+		if [ "$((0x$_s))" -ge 1048576 ]; then _a=$_s; break; fi
+	done </tmp/ram.starts
+	[ -n "$_a" ] || { skip "$1" "no System RAM range at or above 1 MiB in /proc/iomem (or addresses hidden)"; return; }
+	if dd if=/dev/mem of=/dev/null bs=1 skip=$((0x$_a)) count=16 2>/dev/null; then
 		fail "$1" "read 16 bytes of system RAM at 0x$_a through /dev/mem"
 	else pass "$1" "reading system RAM at 0x$_a through /dev/mem is refused"; fi
 }
@@ -74,7 +78,7 @@ run_probes() { # GROUP
 			if tr ',' '\n' </sys/kernel/security/lsm 2>/dev/null | grep -qx "$arg"; then pass "$n" "$desc (lsm list: $(cat /sys/kernel/security/lsm))"
 			else fail "$n" "$desc: not in /sys/kernel/security/lsm ($(cat /sys/kernel/security/lsm 2>/dev/null))"; fi ;;
 		dmesg)
-			if dmesg | grep -qE -- "$arg"; then pass "$n" "$desc ($(dmesg | grep -E -- 'mem auto-init' | head -n1 | sed 's/^\[[^]]*\] //'))"
+			if dmesg | grep -qE -- "$arg"; then pass "$n" "$desc: $(dmesg | grep -E -- "$arg" | head -n1 | sed 's/^\[[^]]*\] //')"
 			else fail "$n" "$desc: '$arg' not in the kernel log"; fi ;;
 		config)
 			if [ ! -s "$CONFIG" ]; then skip "$n" "no /proc/config.gz"
