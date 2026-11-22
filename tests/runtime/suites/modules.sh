@@ -40,6 +40,6 @@ sig=$(cat /sys/module/module/parameters/sig_enforce 2>/dev/null)
 info sig_enforce "sig_enforce=$sig (MODULE_SIG_FORCE is an open decision)"
 # a signed module with a corrupted body must be rejected even when enforcement is off
 if [ -f "/lib/modules/$rel/xlin-tests/tampered.ko" ]; then
-	if insmod "/lib/modules/$rel/xlin-tests/tampered.ko" 2>/tmp/err; then fail tampered-rejected "a module with an INVALID signature was loaded"; rmmod tampered 2>/dev/null
+	if insmod "/lib/modules/$rel/xlin-tests/tampered.ko" 2>/tmp/err; then fail tampered-rejected "a module with an INVALID signature was loaded"; rmmod "$(modinfo -F name "/lib/modules/$rel/xlin-tests/tampered.ko" 2>/dev/null)" 2>/dev/null
 	else pass tampered-rejected "invalid signature refused: $(cat /tmp/err | tail -n 1)"; fi
 else skip tampered-rejected "no tampered.ko in the modules image"; fi

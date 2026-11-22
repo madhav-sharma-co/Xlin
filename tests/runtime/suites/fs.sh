@@ -35,7 +35,17 @@ for spec in $(cmdline_get xlin.fstest | tr ',' ' '); do
 	*:*:*)
 		id=${spec%%:*}; rest=${spec#*:}; type=${rest%%:*}; mode=${rest#*:}
 		if ! fs_available "$type"; then fail "$type" "filesystem '$type' is not available in this kernel (not in /proc/filesystems, no module loaded)"; continue; fi
-		if ! dev=$(wait_disk "$id" 20); then fail "$type" "disk $id not found"; continue; fi
+		if ! dev=$(wait_disk "$id" 20); then
+			fail "$type" "disk $id not found (see the diag lines)"
+			# diagnosis: try to mount every block device as this type and show why it fails
+			for _b in /sys/block/vd*; do
+				_d=/dev/${_b##*/}
+				mount -t "$type" -o ro "$_d" /mnt/probe >/dev/null 2>/tmp/err && { info "diag-$type" "$_d mounts as $type; id file: $(cat /mnt/probe/XLIN-DISK-ID 2>&1)"; umount /mnt/probe; continue; }
+				info "diag-$type" "$_d as $type: $(head -c 120 /tmp/err)"
+			done
+			info "diag-$type" "kernel log: $(dmesg | grep -i "$type" | tail -n 5 | tr '\n' '|')"
+			continue
+		fi
 		mkdir -p /mnt/f
 		opt=ro; [ "$mode" = rw ] && opt=rw
 		if ! mount -t "$type" -o "$opt" "$dev" /mnt/f 2>/tmp/err; then fail "$type" "mount: $(cat /tmp/err)"; continue; fi

@@ -10,3 +10,6 @@ Direct firmware load for regulatory\.db failed with error -2	the test initramfs 
 cfg80211: failed to load regulatory\.db	same cause: no firmware blob in the test initramfs
 PCI: Using host bridge windows from ACPI; if necessary, use "pci=nocrs" and report a bug	standard informational message of the x86 PCI code on ACPI machines; the word "bug" is part of the hint, not a problem report
 CPA detected W\^X violation	FINDING: the kernel prints this warning once during early boot (before SMP alternatives are freed) in every QEMU/KVM boot; unexplained so far, see docs/RUNTIME-VALIDATION.md; kept visible as a finding, not accepted as normal
+Speculative Return Stack Overflow: IBPB-extending microcode not applied	CPU-vulnerability notice printed on AMD hosts when the hypervisor does not expose the microcode that the kernel looks for; depends on the CI runner's CPU, not on the kernel build
+Speculative Return Stack Overflow: WARNING: See https://kernel\.org/doc/html/latest/admin-guide/hw-vuln/srso\.html	second line of the same AMD notice
+amd_pstate: the _CPC object is not present in SBIOS or ACPI disabled	the virtual machine has no ACPI CPC objects (power management is the host's); expected in any QEMU guest on an AMD host

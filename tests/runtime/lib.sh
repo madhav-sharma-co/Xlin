@@ -53,6 +53,8 @@ find_disk() {
 		_n=${_b##*/}
 		case $_n in loop* | ram* | zram*) continue ;; esac
 		[ -b "/dev/$_n" ] || continue
+		# an empty CD-ROM drive (size 0) cannot be mounted and only makes the kernel log a complaint
+		[ "$(cat "/sys/class/block/$_n/size" 2>/dev/null)" != 0 ] || continue
 		mkdir -p /mnt/probe
 		for _t in "" ext4 vfat iso9660 squashfs udf btrfs xfs exfat; do
 			if [ -z "$_t" ]; then mount -o ro "/dev/$_n" /mnt/probe 2>/dev/null || continue
