@@ -290,6 +290,7 @@ jobs:
             --scenarios all --repeat 1 --out build/runtime-test/run-all 2>&1 | tee runtime-all.log
 
       - name: Runtime validation, boot matrix (vCPUs x memory, 3 boots each, flake rate)
+        if: ${{ !cancelled() && hashFiles('build/runtime-test/initramfs.cpio.zst') != '' }}
         run: |
           set -o pipefail
           ./scripts/xlin-runtime-test --kernel artifact/report/bzImage --initramfs build/runtime-test/initramfs.cpio.zst \
