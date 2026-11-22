@@ -11,7 +11,7 @@ for spec in $specs; do
 	n=${dev#/dev/}
 	pass "$id-appears" "$dev"
 	got=$(block_driver "$n")
-	if [ "$got" = "$drv" ]; then pass "$id-driver" "$dev bound to $got"; else fail "$id-driver" "$dev bound to '${got:-none}', expected $drv"; fi
+	case " $got " in *" $drv "*) pass "$id-driver" "$dev: driver chain '$got' includes $drv" ;; *) fail "$id-driver" "$dev: driver chain '${got:-none}' lacks $drv" ;; esac
 	info "$id-size" "$(($(cat /sys/class/block/$n/size) / 2)) KiB"
 	mkdir -p /mnt/d
 	if ! mount -t ext4 "$dev" /mnt/d 2>/tmp/err; then fail "$id-mount" "mount ext4 $dev: $(cat /tmp/err)"; continue; fi

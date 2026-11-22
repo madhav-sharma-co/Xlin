@@ -65,14 +65,16 @@ wait_disk() {
 	return 1
 }
 
-# block_driver DEVNAME: the kernel driver of the device that provides the block device
+# block_driver DEVNAME: every kernel driver on the path from the block device up to the bus
+# (e.g. "sd ahci" or "virtio_blk"), space separated, nearest first
 block_driver() {
 	_p=$(readlink -f "/sys/class/block/$1")
+	_l=""
 	while [ -n "$_p" ] && [ "$_p" != / ] && [ "$_p" != /sys ]; do
-		if [ -L "$_p/driver" ]; then basename "$(readlink -f "$_p/driver")"; return 0; fi
+		if [ -L "$_p/driver" ]; then _l="$_l $(basename "$(readlink -f "$_p/driver")")"; fi
 		_p=$(dirname "$_p")
 	done
-	return 1
+	echo "${_l# }"
 }
 
 # the kernel modules image is attached as a disk with the id xlin-modules

@@ -3,6 +3,10 @@ SUITE=net
 # xlin.nic=DRIVER: the single non-loopback interface must use that driver, get a DHCP lease from
 # QEMU's user-mode network and reach the gateway (10.0.2.2) with ICMP echo.
 want=$(cmdline_get xlin.nic)
+premod=$(cmdline_get xlin.premod)
+if [ -n "$premod" ]; then
+	setup_modules && modprobe "$premod" 2>/tmp/err && pass "modprobe-$premod" "module loaded" || fail "modprobe-$premod" "cannot load $premod: $(cat /tmp/err 2>/dev/null)"
+fi
 _i=0
 iface=""
 while [ "$_i" -lt 15 ]; do

@@ -15,7 +15,7 @@ for spec in $(cmdline_get xlin.fstest | tr ',' ' '); do
 		[ "$a" = "$b" ] && pass tmpfs-rw "8 MiB written and read back" || fail tmpfs-rw "checksum differs"
 		umount /mnt/t ;;
 	fuse)
-		if grep -qw fuse /proc/filesystems && [ -c /dev/fuse ]; then pass fuse "fuse registered and /dev/fuse present (no userspace FUSE daemon is run: mounting is not tested)"
+		if fs_available fuse && [ -c /dev/fuse ]; then pass fuse "fuse registered and /dev/fuse present (no userspace FUSE daemon is run: mounting is not tested)"
 		else fail fuse "fuse: filesystem registered=$(grep -cw fuse /proc/filesystems) /dev/fuse=$([ -c /dev/fuse ] && echo yes || echo no)"; fi ;;
 	overlay:*)
 		id=${spec#overlay:}

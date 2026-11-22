@@ -79,6 +79,10 @@ for id in a b; do
 	mke2fs -q -t ext4 -F -d "$work/ext4$id" "$out/ext4-$id.img" 16M
 done
 
+# scratch disk for the reboot-cycle scenario (the guest stores a counter in sector 0)
+truncate -s 8M "$out/scratch.img"
+note "built scratch 8388608"
+
 # ---- modules image ------------------------------------------------------------------------
 if [ -n "$mtar" ] || [ -n "$mdir" ]; then
 	if [ -n "$mtar" ]; then
