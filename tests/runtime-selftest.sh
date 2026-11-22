@@ -73,7 +73,7 @@ run 0 "a complete good guest log passes" --scenarios base
 
 good_log config hardening systemd measure logscan | sed 's/^XLIN-TEST: hardening something PASS fine/XLIN-TEST: hardening kaslr FAIL text at link address/' >"$FAKE_LOG"
 run 1 "a FAILED check fails the run" --scenarios base
-grep -q 'hardening.kaslr' "$T/last.txt" && ok "the failing check is named in the output" || bad "failing check not named"
+if grep -q 'hardening.kaslr' "$T/last.txt"; then ok "the failing check is named in the output"; else bad "failing check not named"; fi
 
 good_log config hardening systemd measure logscan | grep -v 'XLIN-RUNTIME: DONE' >"$FAKE_LOG"
 run 1 "a missing DONE marker fails" --scenarios base
@@ -99,7 +99,7 @@ run 0 "an explained SKIP (not tested) is allowed and is not counted as a pass" -
 # NOT TESTED: option absent from the build config is reported and is not a failure
 good_log config hardening systemd measure logscan >"$FAKE_LOG"
 run 0 "a scenario whose kernel option is absent is NOT TESTED, not failed" --scenarios base,blk-nvme
-grep -q 'NOT TESTED blk-nvme' "$T/last.txt" && ok "the NOT TESTED reason is printed" || bad "no NOT TESTED line"
+if grep -q 'NOT TESTED blk-nvme' "$T/last.txt"; then ok "the NOT TESTED reason is printed"; else bad "no NOT TESTED line"; fi
 run 3 "a run with nothing runnable is exit 3" --scenarios blk-nvme
 
 # flake rate: the fake alternates good/bad by a counter file
@@ -113,7 +113,7 @@ Q
 good_log config hardening systemd measure logscan >"$T/good"
 good_log config hardening systemd measure logscan | grep -v DONE >"$T/badlog"
 run 1 "alternating good/bad boots: the run fails" --scenarios base --repeat 4
-grep -q '| 2 | 50%' "$T/out/summary.md" && ok "flake rate 50% is reported" || { bad "flake rate not reported"; grep base "$T/out/summary.md"; }
+if grep -q '| 2 | 50%' "$T/out/summary.md"; then ok "flake rate 50% is reported"; else bad "flake rate not reported"; grep base "$T/out/summary.md"; fi
 
 # an image that could not be built is reported with its reason
 run 3 "fs scenario without the modules image is NOT TESTED" --scenarios fs >/dev/null

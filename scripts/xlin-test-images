@@ -91,7 +91,10 @@ if [ -n "$mtar" ] || [ -n "$mdir" ]; then
 		zstd -dc "$mtar" | tar -x -C "$work/mt"
 		mdir=$(find "$work/mt" -mindepth 3 -maxdepth 4 -type d -path '*lib/modules/*' | head -n1)
 	fi
-	[ -n "$mdir" ] && [ -f "$mdir/modules.dep" ] || { echo "error: no modules.dep in the modules (looked in ${mdir:-none})" >&2; exit 1; }
+	if [ -z "$mdir" ] || [ ! -f "$mdir/modules.dep" ]; then
+		echo "error: no modules.dep in the modules (looked in ${mdir:-none})" >&2
+		exit 1
+	fi
 	# the image root IS lib/modules/<release>, plus a few test modules made from a real one
 	rm -rf "$work/mod"
 	mkdir -p "$work/mod"
@@ -154,7 +157,7 @@ printf '%s' xlin-fs-ok-ntfs3 >"$work/fs-ntfs/XLIN-FS-TEST"
 
 build_ext4() { mke2fs -q -t ext4 -F -d "$work/fs-ext4" "$out/fs-ext4.img" 32M; }
 build_vfat() {
-	want mkfs.vfat && want mcopy || { echo "needs dosfstools and mtools"; return 1; }
+	if ! want mkfs.vfat || ! want mcopy; then echo "needs dosfstools and mtools"; return 1; fi
 	rm -f "$out/fs-vfat.img"
 	mkfs.vfat -C "$out/fs-vfat.img" 16384 >/dev/null
 	mcopy -i "$out/fs-vfat.img" "$work"/fs-vfat/XLIN-DISK-ID "$work"/fs-vfat/XLIN-FS-TEST ::
@@ -185,7 +188,7 @@ PROTO
 	mkfs.xfs -q -f -p "$work/xfs.proto" "$out/fs-xfs.img"
 }
 build_ntfs() {
-	want mkntfs && want ntfscp || { echo "needs ntfs-3g"; return 1; }
+	if ! want mkntfs || ! want ntfscp; then echo "needs ntfs-3g"; return 1; fi
 	rm -f "$out/fs-ntfs.img"
 	truncate -s 64M "$out/fs-ntfs.img"
 	mkntfs -q -F -f "$out/fs-ntfs.img" >/dev/null
