@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Runtime probes of the Xlin Kernel and the kernel configuration options each one depends on.
+# Columns (separated by TAB; "-" means empty):
+#   id    kind    arg    expected    required-options    description
+# id        group.name; the group (hardening, systemd) selects the guest suite that runs it.
+# kind      sysctl (file holds expected) | exists (path exists) | contains (file contains expected text)
+#           | lsm (name is in /sys/kernel/security/lsm) | dmesg (ERE matches the kernel log)
+#           | config (value of CONFIG_<arg> in /proc/config.gz, NOT a behavioural test)
+#           | cmd (shell command exits 0) | special (function special_<arg> in tests/runtime/probes.sh)
+# required-options  comma list SYMBOL=value that must hold in the final kernel config for the probe
+#                   to be meaningful. scripts/xlin-probe-map checks this against the real .config and
+#                   reports probes whose option is absent as UNSUPPORTED, instead of hiding them.
+hardening.kaslr	special	kaslr	-	RANDOMIZE_BASE=y,RANDOMIZE_MEMORY=y	kernel text base is randomised
+hardening.dmesg_restrict	sysctl	/proc/sys/kernel/dmesg_restrict	1	SECURITY_DMESG_RESTRICT=y	unprivileged dmesg is restricted
+hardening.yama_ptrace_scope	exists	/proc/sys/kernel/yama/ptrace_scope	-	SECURITY_YAMA=y	Yama ptrace scope control exists
+hardening.lsm_yama	lsm	yama	-	SECURITY_YAMA=y	Yama is an active LSM
+hardening.lsm_landlock	lsm	landlock	-	SECURITY_LANDLOCK=y	Landlock is an active LSM
+hardening.lsm_lockdown	lsm	lockdown	-	SECURITY_LOCKDOWN_LSM=y	the lockdown LSM is active
+hardening.lockdown_mode	contains	/sys/kernel/security/lockdown	[none]	SECURITY_LOCKDOWN_LSM=y	lockdown mode is none (not enforcing; an open decision)
+hardening.bpf_unprivileged_off	sysctl	/proc/sys/kernel/unprivileged_bpf_disabled	2	BPF_SYSCALL=y,BPF_UNPRIV_DEFAULT_OFF=y	unprivileged BPF is disabled
+hardening.init_on_alloc	dmesg	heap alloc:on	-	INIT_ON_ALLOC_DEFAULT_ON=y	heap allocations are zeroed (boot log)
+hardening.no_vsyscall	special	vsyscall	-	LEGACY_VSYSCALL_NONE=y	no legacy [vsyscall] page is mapped
+hardening.strict_devmem	special	devmem	-	STRICT_DEVMEM=y,IO_STRICT_DEVMEM=y	/dev/mem cannot read system RAM
+hardening.cpu_vulnerabilities	exists	/sys/devices/system/cpu/vulnerabilities	-	CPU_MITIGATIONS=y	CPU vulnerability status is reported
+hardening.module_sig_not_forced	sysctl	/sys/module/module/parameters/sig_enforce	N	MODULE_SIG=y	module signatures are checked but not enforced (open decision)
+hardening.page_shuffle	special	shuffle	-	SHUFFLE_PAGE_ALLOCATOR=y	page allocator shuffling: configured vs active at runtime
+hardening.stackprotector_strong	config	STACKPROTECTOR_STRONG	y	STACKPROTECTOR_STRONG=y	config only: strong stack protector
+hardening.fortify_source	config	FORTIFY_SOURCE	y	FORTIFY_SOURCE=y	config only: FORTIFY_SOURCE
+hardening.hardened_usercopy	config	HARDENED_USERCOPY	y	HARDENED_USERCOPY=y	config only: hardened usercopy
+hardening.vmap_stack	config	VMAP_STACK	y	VMAP_STACK=y	config only: virtually mapped kernel stacks
+hardening.slab_freelist_hardened	config	SLAB_FREELIST_HARDENED	y	SLAB_FREELIST_HARDENED=y	config only: slab freelist hardening
+hardening.slab_freelist_random	config	SLAB_FREELIST_RANDOM	y	SLAB_FREELIST_RANDOM=y	config only: slab freelist randomisation
+hardening.kstack_offset_random	config	RANDOMIZE_KSTACK_OFFSET_DEFAULT	y	RANDOMIZE_KSTACK_OFFSET_DEFAULT=y	config only: kernel stack offset randomisation on by default
+hardening.module_signing	config	MODULE_SIG_ALL	y	MODULE_SIG_ALL=y	config only: modules are signed at build time
+systemd.devtmpfs	contains	/proc/mounts	devtmpfs	DEVTMPFS=y	devtmpfs is mounted
+systemd.cgroup2	special	cgroup2	-	CGROUPS=y	cgroup v2 can be mounted and has controllers
+systemd.ns_user	cmd	unshare -U true	-	USER_NS=y	user namespace can be created
+systemd.ns_net	cmd	unshare -n true	-	NET_NS=y	network namespace can be created
+systemd.ns_uts	cmd	unshare -u true	-	UTS_NS=y	UTS namespace can be created
+systemd.ns_ipc	cmd	unshare -i true	-	IPC_NS=y	IPC namespace can be created
+systemd.ns_pid	cmd	unshare -p -f true	-	PID_NS=y	PID namespace can be created
+systemd.seccomp	contains	/proc/self/status	Seccomp:	SECCOMP=y,SECCOMP_FILTER=y	seccomp is available
+systemd.psi	exists	/proc/pressure/cpu	-	PSI=y	pressure stall information is available
+systemd.inotify	exists	/proc/sys/fs/inotify/max_user_watches	-	INOTIFY_USER=y	inotify is available
+systemd.dmi_id	exists	/sys/class/dmi/id	-	DMIID=y	DMI identification is exported
+systemd.efivarfs	special	efivarfs	-	EFIVAR_FS=y	efivarfs can be mounted and lists variables
+systemd.fanotify	config	FANOTIFY	y	FANOTIFY=y	config only: fanotify
+systemd.signalfd	config	SIGNALFD	y	SIGNALFD=y	config only: signalfd
+systemd.timerfd	config	TIMERFD	y	TIMERFD=y	config only: timerfd
+systemd.epoll	config	EPOLL	y	EPOLL=y	config only: epoll
+systemd.fhandle	config	FHANDLE	y	FHANDLE=y	config only: file handle syscalls
+systemd.autofs	config	AUTOFS_FS	y	AUTOFS_FS=y	config only: autofs
+systemd.tmpfs_xattr	config	TMPFS_XATTR	y	TMPFS_XATTR=y	config only: tmpfs xattr
+systemd.tmpfs_acl	config	TMPFS_POSIX_ACL	y	TMPFS_POSIX_ACL=y	config only: tmpfs POSIX ACL
+systemd.cgroup_bpf	config	CGROUP_BPF	y	CGROUP_BPF=y	config only: cgroup BPF
+systemd.ipv6	config	IPV6	y	IPV6=y	config only: IPv6
