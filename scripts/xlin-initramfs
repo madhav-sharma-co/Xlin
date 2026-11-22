@@ -89,12 +89,20 @@ file -L "$busybox" | grep -q 'statically linked' || cant "$busybox is not static
 
 need="sh mount cat grep sed cut uname poweroff setsid cttyhack sync echo mkdir sleep"
 if [ "$runtime" = 1 ]; then
-	need="$need umount tr wc ls head tail dd od sha256sum zcat readlink basename dirname dmesg kill reboot rm awk mountpoint tee ifconfig route udhcpc ping unshare sort"
+	need="$need umount tr wc ls head tail dd od sha256sum zcat readlink basename dirname dmesg kill reboot rm awk tee sort"
 fi
 applets=$("$busybox" --list 2>/dev/null) || cant "$busybox does not support --list"
+missing=""
 for a in $need; do
-	grep -qx "$a" <<<"$applets" || cant "BusyBox lacks the applet '$a'"
+	grep -qx "$a" <<<"$applets" || missing="$missing $a"
 done
+[ -z "$missing" ] || cant "BusyBox lacks the applet(s):$missing"
+if [ "$runtime" = 1 ]; then
+	# not required: the suites that use them report a clear failure or skip when one is absent
+	for a in mountpoint ifconfig route udhcpc ping unshare; do
+		grep -qx "$a" <<<"$applets" || echo "warning: BusyBox lacks the optional applet '$a'; dependent checks will be skipped or fail visibly" >&2
+	done
+fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

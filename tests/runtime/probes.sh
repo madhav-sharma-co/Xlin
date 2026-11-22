@@ -41,7 +41,7 @@ special_cgroup2() {
 }
 special_efivarfs() {
 	[ -d /sys/firmware/efi/efivars ] || { fail "$1" "no /sys/firmware/efi/efivars"; return; }
-	mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || mountpoint -q /sys/firmware/efi/efivars || { fail "$1" "cannot mount efivarfs"; return; }
+	mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || grep -q " /sys/firmware/efi/efivars efivarfs" /proc/mounts || { fail "$1" "cannot mount efivarfs"; return; }
 	_n=$(ls /sys/firmware/efi/efivars | wc -l)
 	if [ "$_n" -gt 0 ]; then pass "$1" "efivarfs mounted, $_n variables"; else fail "$1" "efivarfs mounted but empty"; fi
 }

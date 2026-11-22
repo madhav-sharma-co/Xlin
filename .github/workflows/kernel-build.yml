@@ -11,12 +11,18 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: "Debugging only: reuse the build artifact of this earlier run instead of rebuilding (the runtime-test job then runs; build and boot-test are skipped)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: ${{ inputs.build_run_id == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -194,6 +200,7 @@ jobs:
     # informational measurements). QEMU + OVMF only: this does NOT test Xlin Boot, physical
     # hardware or production readiness.
     needs: build
+    if: ${{ always() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -247,6 +254,8 @@ jobs:
         with:
           name: xlin-kernel-build
           path: artifact
+          run-id: ${{ inputs.build_run_id || github.run_id }}
+          github-token: ${{ github.token }}
 
       - name: The kernel under test is the one the build job reported
         run: |
@@ -335,7 +344,7 @@ jobs:
     # kernel is a different version and configuration, built by Arch; this job only shows how
     # the Xlin Kernel's runtime behaviour differs and never fails the workflow.
     needs: [build, runtime-test]
-    if: always() && needs.build.result == 'success'
+    if: ${{ always() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     continue-on-error: true
