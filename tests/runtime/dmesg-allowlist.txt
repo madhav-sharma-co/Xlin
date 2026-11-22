@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Reviewed kernel-log lines that are expected in the QEMU runtime test.
+# Format: ERE <TAB> reason. A kernel-log line that looks like a warning or error and matches no
+# entry here FAILS the logscan suite. Add an entry only after reading the line and deciding
+# that it is harmless in this test environment; never to hide a real problem.
+x86/split lock detection: #DB: warning on user-space bus_locks	informational notice about the default split-lock policy (warn); not an error
+Direct firmware load for regulatory\.db failed with error -2	the test initramfs carries no firmware files; cfg80211 falls back to its built-in regulatory rules
+cfg80211: failed to load regulatory\.db	same cause: no firmware blob in the test initramfs
