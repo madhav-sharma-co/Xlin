@@ -15,3 +15,5 @@ Speculative Return Stack Overflow: WARNING: See https://kernel\.org/doc/html/lat
 amd_pstate: the _CPC object is not present in SBIOS or ACPI disabled	the virtual machine has no ACPI CPC objects (power management is the host's); expected in any QEMU guest on an AMD host
 mtrr: your CPUs had inconsistent .*settings	QEMU software emulation (TCG) does not keep MTRR state identical across vCPUs; seen only on TCG with more than one vCPU, never under KVM
 tsc: Unable to calibrate against PIT	QEMU software emulation (TCG) timing: the PIT calibration can miss its window when the CI host is busy; seen in 1 of 8 TCG boots (reported as a flake in docs/RUNTIME-VALIDATION.md), never under KVM
+amd_pstate: The CPPC feature is supported but currently disabled by the BIOS	AMD-host notice: the virtual firmware does not enable CPPC for the guest; depends on the CI runner CPU, not on the kernel build
+Please enable it if your BIOS has the CPPC option	second line of the same amd_pstate notice
