@@ -26,3 +26,5 @@ signing_key.*
 .idea/
 .vscode/
 *.swp
+__pycache__/
+*.pyc
