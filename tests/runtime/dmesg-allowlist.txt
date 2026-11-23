@@ -17,3 +17,4 @@ mtrr: your CPUs had inconsistent .*settings	QEMU software emulation (TCG) does n
 tsc: Unable to calibrate against PIT	QEMU software emulation (TCG) timing: the PIT calibration can miss its window when the CI host is busy; seen in 1 of 8 TCG boots (reported as a flake in docs/RUNTIME-VALIDATION.md), never under KVM
 amd_pstate: The CPPC feature is supported but currently disabled by the BIOS	AMD-host notice: the virtual firmware does not enable CPPC for the guest; depends on the CI runner CPU, not on the kernel build
 Please enable it if your BIOS has the CPPC option	second line of the same amd_pstate notice
+tsc: Fast TSC calibration failed	QEMU software emulation (TCG) timing, same family as the PIT calibration notice: calibration can miss its window when the CI host is busy; seen in 1 of 8 TCG boots of one run, never under KVM

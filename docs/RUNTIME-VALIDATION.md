@@ -107,7 +107,7 @@ Observed in CI on 2026-11-22/23 with the pinned Linux 6.18.64 and the approved c
 
 **KVM boot matrix:** 1/2/4/8 vCPUs with 256 MiB to 4 GiB, 3 boots each, 24 boots, **0 failures (flake rate 0%)**; boot-to-power-off 4.0–5.0 s.
 
-**TCG (software emulation):** reduced matrix, 2 boots each (8 boots). Across the CI runs, two kernel-log notices appeared only under TCG and were reviewed and allowlisted with reasons: inconsistent MTRR notices with more than one vCPU, and `tsc: Unable to calibrate against PIT`. The latter appeared in **1 of 8** TCG boots in one run (a flake of the test environment, not observed under KVM). Boots took about 14–16 s.
+**TCG (software emulation):** reduced matrix, 2 boots each (8 boots). Across the CI runs, three kernel-log notices appeared only under TCG and were reviewed and allowlisted with reasons: inconsistent MTRR notices with more than one vCPU, `tsc: Unable to calibrate against PIT` and `tsc: Fast TSC calibration failed`. Each of the two TSC notices appeared in **1 of 8** TCG boots in a different CI run (an intermittent flake of the software-emulated clock on a busy host; not observed under KVM). Before they were allowlisted, each made the affected run fail. Boots took about 14–16 s.
 
 **Hardening probes:** see `tests/runtime/probes.tsv` for each probe and its required options. In the approved configuration all 44 probes map to existing Kconfig symbols and, for the checks listed, to options that are set. Deviations, reported rather than fixed:
 
