@@ -297,15 +297,23 @@ jobs:
             --images build/runtime-test/images --config artifact/report/config-final \
             --scenarios base --matrix auto --repeat 3 --out build/runtime-test/run-matrix 2>&1 | tee runtime-matrix.log
 
+      - name: Runtime validation under software emulation (TCG), reduced matrix, 2 boots each
+        if: ${{ !cancelled() && hashFiles('build/runtime-test/initramfs.cpio.zst') != '' }}
+        run: |
+          set -o pipefail
+          ./scripts/xlin-runtime-test --kernel artifact/report/bzImage --initramfs build/runtime-test/initramfs.cpio.zst \
+            --images build/runtime-test/images --config artifact/report/config-final \
+            --scenarios base --accel tcg --matrix tcg --repeat 2 --out build/runtime-test/run-tcg 2>&1 | tee runtime-tcg.log
+
       - name: Reports
         if: always()
         run: |
-          for d in run-all run-matrix; do
+          for d in run-all run-matrix run-tcg; do
             if [ -f build/runtime-test/$d/summary.md ]; then
               { echo "## $d"; cat build/runtime-test/$d/summary.md; } | tee -a "$GITHUB_STEP_SUMMARY" >/dev/null
             fi
           done
-          for d in build/runtime-test/run-all/*/ build/runtime-test/run-matrix/*/; do
+          for d in build/runtime-test/run-all/*/ build/runtime-test/run-matrix/*/ build/runtime-test/run-tcg/*/; do
             [ -f "$d/serial.log" ] || continue
             echo "::group::serial.log $d"; cat "$d/serial.log"; echo "::endgroup::"
           done
@@ -324,6 +332,9 @@ jobs:
             build/runtime-test/run-all/*/qemu-command.txt
             build/runtime-test/run-all/*/qemu-stderr.log
             build/runtime-test/run-matrix/*/serial.log
+            build/runtime-test/run-tcg/summary.md
+            build/runtime-test/run-tcg/results.json
+            build/runtime-test/run-tcg/*/serial.log
             build/runtime-test/initramfs.cpio.zst.manifest
             build/runtime-test/images/images.txt
             probe-map.md
