@@ -75,6 +75,7 @@ QEMU + OVMF direct kernel boot: it tests the kernel, not Xlin Boot and not hardw
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md): the kernel configuration, its decisions and open questions.
 - [docs/BUILD.md](docs/BUILD.md): the first build, its measurements and checks.
 - [docs/BOOT-TEST.md](docs/BOOT-TEST.md): the QEMU + OVMF boot test, its criteria and results.
+- [docs/RUNTIME-VALIDATION.md](docs/RUNTIME-VALIDATION.md): expanded QEMU runtime validation (config.gz, hardening/systemd probes, devices, filesystems, modules, boot matrix), its results, findings and gaps.
 - [docs/LICENSING.md](docs/LICENSING.md): licences, file by file.
 
 ## Licensing

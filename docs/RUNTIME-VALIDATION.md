@@ -99,4 +99,39 @@ See `docs/LICENSING.md`. kmod, the filesystem tools and QEMU/OVMF are installed 
 
 ## Results
 
-See the "Results" section below, added after the CI runs.
+Observed in CI on 2026-11-22/23 with the pinned Linux 6.18.64 and the approved configuration (kernel `bzImage` 12,174,336 bytes, 39 modules, 9,729,035 bytes compressed). The runs below used a kernel built by an earlier run of this same branch's CI; the pull request's own full run (build included) is the final confirmation. QEMU/KVM on shared GitHub runners; numbers are indicative only.
+
+**Scenarios (KVM, one boot each): all 16 passed.** Boot, `/proc/config.gz` byte-identical to the build's `.config`; 30 checks passed, 2 not tested in `base`; virtio-blk, virtio-scsi, AHCI, NVMe, USB storage (xHCI), virtio-rng, standard VGA, virtio-vga, virtio-net, e1000e and igb (module, loaded with kmod) all passed their checks; filesystems ext4, FAT, squashfs, overlayfs, ISO 9660, UDF, Btrfs, XFS, NTFS3 (read-only) and tmpfs passed, FUSE availability passed (mounting not tested); stress and three warm reboots passed.
+
+**Modules (kmod 31 from the runner):** 39 modules, all signed; 38 loaded and unloaded cleanly; 1 (`x86_pkg_temp_thermal`) returned ENODEV because the VM has no matching device. A module with a corrupted signed body was refused ("Key was rejected by service"). `sig_enforce` is `N`, as configured (`MODULE_SIG_FORCE` is still an open decision).
+
+**KVM boot matrix:** 1/2/4/8 vCPUs with 256 MiB to 4 GiB, 3 boots each, 24 boots, **0 failures (flake rate 0%)**; boot-to-power-off 4.0–5.0 s.
+
+**TCG (software emulation):** reduced matrix, 2 boots each (8 boots). Across the CI runs, two kernel-log notices appeared only under TCG and were reviewed and allowlisted with reasons: inconsistent MTRR notices with more than one vCPU, and `tsc: Unable to calibrate against PIT`. The latter appeared in **1 of 8** TCG boots in one run (a flake of the test environment, not observed under KVM). Boots took about 14–16 s.
+
+**Hardening probes:** see `tests/runtime/probes.tsv` for each probe and its required options. In the approved configuration all 44 probes map to existing Kconfig symbols and, for the checks listed, to options that are set. Deviations, reported rather than fixed:
+
+* `CONFIG_SECURITYFS` is not set, so `/sys/kernel/security/lsm` and `/sys/kernel/security/lockdown` do not exist. The two probes that use them are reported *not tested: UNSUPPORTED by this kernel's configuration*. The LSM list is verified from the boot log instead (`capability,landlock,lockdown,yama,selinux`). Arch's `linux-lts` has securityfs. Whether Xlin should enable it (systemd and tools read these files) is a configuration decision for the maintainer; it was not changed here.
+* `CONFIG_SHUFFLE_PAGE_ALLOCATOR=y` is configured but not active at runtime (reported as such).
+* The LSM list contains SELinux and no `bpf` LSM, as the approved configuration implies.
+* Config-only probes are labelled as such.
+
+**Open finding.** In some runs the kernel prints `CPA detected W^X violation: ... range: 0xffffffffc0200000 ...` once during early boot. It appeared in the first CI runs and in one later run, and not in others; the CI job's host CPU differs between runs and was not recorded, so the dependency on the host is a suspicion, not a result. The Arch kernel's baseline runs showed no such line. It is kept visible as a finding in every summary. It has not been diagnosed and has not been shown to be harmless.
+
+**Other reviewed notices** (allowlisted with reasons in `tests/runtime/dmesg-allowlist.txt`): split-lock informational notice; missing `regulatory.db` (no firmware in the test initramfs); the PCI `pci=nocrs` hint; AMD "Speculative Return Stack Overflow" microcode notice and `amd_pstate` missing `_CPC` (depend on the CI host CPU as seen by the VM).
+
+**Problems found in the test setup while building it (not kernel faults):** BusyBox's shell ran its own `modprobe` applet instead of kmod; the kernel's own module requests had no helper (`kernel.modprobe`), which made Btrfs fail on `crc32c` until fixed; a virtual `sit0` interface was mistaken for a NIC; an empty CD-ROM drive made the kernel log complaints when probed.
+
+**Arch `linux-lts` baseline (non-gating).** The baseline kernel is 6.18.64-1-lts, i.e. the same upstream version, but with Arch's configuration and build. Same guest, same CI host class, separate jobs. Single-run medians, informational only:
+
+| Measurement | Xlin Kernel | Arch linux-lts |
+|---|---|---|
+| kernel start to `/init` (s) | 1.46 | 2.20 |
+| idle memory in use (kB) | 68,980 | 149,764 |
+| slab (kB) | 8,808 | 14,228 |
+| processes at idle | 83 | 88 |
+| `bzImage` | 12.2 MB (zstd) | not measured |
+
+The Xlin kernel is much smaller in configuration, so these differences are expected; they are not a claim that Xlin is "faster" or "better". Probe differences: Arch passes the securityfs-based probes that Xlin cannot run; the `no_vsyscall` probe is not tested on Arch because its configuration does not set the option.
+
+**Not tested / not done:** see "Known gaps".
