@@ -17,6 +17,8 @@ mount -t securityfs securityfs /sys/kernel/security 2>/dev/null
 mkdir -p /mnt /mnt/probe
 # keep the serial console quiet while checks print; the kernel ring buffer still keeps everything
 echo 3 >/proc/sys/kernel/printk
+# the kernel's own module requests (crypto algorithms, filesystems...) run this helper
+[ -x /bin/kmod ] && echo /bin/modprobe >/proc/sys/kernel/modprobe
 
 . /tests/lib.sh
 SUITE=init

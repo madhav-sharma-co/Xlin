@@ -51,7 +51,7 @@ config_is() { grep -qx "CONFIG_$1=$2" "$CONFIG" 2>/dev/null; }
 find_disk() {
 	for _b in /sys/block/*; do
 		_n=${_b##*/}
-		case $_n in loop* | ram* | zram*) continue ;; esac
+		case $_n in loop* | ram* | zram* | sr*) continue ;; esac
 		[ -b "/dev/$_n" ] || continue
 		# an empty CD-ROM drive (size 0) cannot be mounted and only makes the kernel log a complaint
 		[ "$(cat "/sys/class/block/$_n/size" 2>/dev/null)" != 0 ] || continue
