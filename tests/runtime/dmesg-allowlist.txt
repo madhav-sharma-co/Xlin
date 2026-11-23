@@ -13,3 +13,4 @@ CPA detected W\^X violation	FINDING: the kernel prints this warning once during 
 Speculative Return Stack Overflow: IBPB-extending microcode not applied	CPU-vulnerability notice printed on AMD hosts when the hypervisor does not expose the microcode that the kernel looks for; depends on the CI runner's CPU, not on the kernel build
 Speculative Return Stack Overflow: WARNING: See https://kernel\.org/doc/html/latest/admin-guide/hw-vuln/srso\.html	second line of the same AMD notice
 amd_pstate: the _CPC object is not present in SBIOS or ACPI disabled	the virtual machine has no ACPI CPC objects (power management is the host's); expected in any QEMU guest on an AMD host
+mtrr: your CPUs had inconsistent .*settings	QEMU software emulation (TCG) does not keep MTRR state identical across vCPUs; seen only on TCG with more than one vCPU, never under KVM
