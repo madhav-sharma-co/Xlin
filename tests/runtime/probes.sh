@@ -10,7 +10,12 @@ special_kaslr() {
 	_t=$(grep -m1 ' _text$' /proc/kallsyms | cut -d' ' -f1)
 	[ -n "$_t" ] && [ "$_t" != 0000000000000000 ] || { skip "$1" "_text address hidden (kptr_restrict)"; return; }
 	if [ "$_t" != ffffffff81000000 ]; then pass "$1" "_text=$_t (not the link-time address)"
-	else fail "$1" "_text=$_t is the link-time address: KASLR did not move the kernel"; fi
+	else
+		# With working KASLR the kernel lands on the link-time address by chance (one slot in a
+		# few hundred), so ONE boot cannot show that KASLR is broken. The host judge fails the run
+		# only when every boot of a repeated run collides (xlin-runtime-test, "COLLISION").
+		skip "$1" "COLLISION _text=$_t equals the link-time address in this boot; chance for a working KASLR is about 1 in 512 per boot, so it is judged across the boots of a repeated run, not here"
+	fi
 }
 special_vsyscall() {
 	if grep -q vsyscall /proc/self/maps; then fail "$1" "a [vsyscall] mapping exists"

@@ -103,6 +103,11 @@ if grep -q 'Verdict: PASS WITH OPEN FINDINGS' "$T/out/summary.md" && grep -q 'NO
 if grep -A4 'Open findings' "$T/out/summary.md" | grep -q 'W-X-CPA-ITS.*EXPLAINED-OPEN.*1 of 1 boots whose kernel log was scanned'; then ok "the finding is listed in the summary with its status and boot count"; else bad "finding missing from the summary"; fi
 run 4 "--strict-findings turns an open finding into a non-zero exit" --scenarios base --strict-findings
 
+good_log config hardening systemd measure logscan | sed 's/^XLIN-TEST: hardening something PASS fine/XLIN-TEST: hardening kaslr SKIP COLLISION _text=ffffffff81000000 equals the link-time address/' >"$FAKE_LOG"
+run 0 "one boot whose _text collides with the link address is not a failure (chance, 1 in ~512)" --scenarios base
+run 1 "every boot of a 3-boot run colliding IS a failure (KASLR not moving the kernel)" --scenarios base --repeat 3
+if grep -q 'KASLR did not move the kernel in any of 3 boots' "$T/last.txt"; then ok "the all-boots KASLR failure is named"; else bad "all-boots KASLR failure not named"; fi
+
 good_log config hardening systemd measure logscan >"$FAKE_LOG"
 run 0 "a good log without a finding is a clean PASS" --scenarios base
 if grep -q '^RESULT: PASS (' "$T/last.txt" && grep -q 'Verdict: PASS - ' "$T/out/summary.md"; then ok "the clean verdict is used only when no finding was observed"; else bad "clean verdict wrong"; fi

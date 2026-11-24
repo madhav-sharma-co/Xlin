@@ -489,6 +489,20 @@ def main():
             print(f"  -> {('PASS WITH OPEN FINDINGS' if not r['clean'] else 'PASS') if r['passed'] else 'FAIL'} in {r['seconds']} s ({r['counts']['pass_']} passed, {r['counts']['fail']} failed, {r['counts']['skip']} not tested, {r['counts']['finding']} open finding(s))"
                   + ("" if r["passed"] else f"; classification: {r['classification']}; earliest error: {r['first_error']}"), flush=True)
 
+    # KASLR cannot be judged from one boot: landing on the link-time address happens by chance with a
+    # working KASLR. The guest reports such a boot as COLLISION (not tested); the run fails here only
+    # if every boot of a repeated run (3 or more) collided, which chance does not explain.
+    for rn, rs in results.items():
+        col = [r for r in rs if any(t["suite"] == "hardening" and t["name"] == "kaslr" and t["status"] == "SKIP"
+                                    and t["detail"].startswith("COLLISION") for t in r["tests"])]
+        if len(rs) >= 3 and len(col) == len(rs):
+            for r in rs:
+                r["passed"], r["clean"] = False, False
+                r["checks"].append(dict(ok=False, name="hardening.kaslr", detail=f"all {len(rs)} boots of {rn} had _text at the link-time address: KASLR is not moving the kernel"))
+            print(f"  FAIL {rn}: KASLR did not move the kernel in any of {len(rs)} boots")
+        elif col:
+            print(f"  NOTE {rn}: {len(col)} of {len(rs)} boots had _text at the link-time address (by chance; KASLR judged across boots)")
+
     # ---- summary ---------------------------------------------------------------------------------
     failed_runs = [rn for rn, rs in results.items() if any(not r["passed"] for r in rs)]
     finding_boots = {}   # finding id -> (boots with it, boots whose log scan evaluated it, detail, -)
