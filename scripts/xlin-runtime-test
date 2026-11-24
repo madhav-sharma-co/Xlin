@@ -491,15 +491,19 @@ def main():
 
     # ---- summary ---------------------------------------------------------------------------------
     failed_runs = [rn for rn, rs in results.items() if any(not r["passed"] for r in rs)]
-    finding_boots = {}   # finding id -> (boots with it, boots total, status text, example detail)
-    boots_total = sum(len(rs) for rs in results.values())
+    finding_boots = {}   # finding id -> (boots with it, boots whose log scan evaluated it, detail, -)
+    scanned = {}         # finding id -> boots in which the log scan ran (only boots with the logscan suite can show it)
+    hits = {}
     for rs in results.values():
         for r in rs:
             for t in r["tests"]:
-                if t["status"] == "FINDING":
-                    fid = t["name"]
-                    n, _, _, _ = finding_boots.get(fid, (0, 0, "", ""))
-                    finding_boots[fid] = (n + 1, boots_total, t["detail"], t["detail"])
+                if t["name"].startswith("finding-"):
+                    scanned[t["name"]] = scanned.get(t["name"], 0) + 1
+                    if t["status"] == "FINDING":
+                        hits[t["name"]] = hits.get(t["name"], 0) + 1
+                        finding_boots[t["name"]] = (hits[t["name"]], 0, t["detail"], "")
+    for fid, (n, _, d, x) in list(finding_boots.items()):
+        finding_boots[fid] = (n, scanned[fid], d, x)
     unclean_runs = [rn for rn, rs in results.items() if any(not r["clean"] for r in rs) and rn not in failed_runs]
     if failed_runs:
         verdict_text = "FAIL"
@@ -557,7 +561,7 @@ def main():
         md.append("- none observed in these boots (the scanner still checks for every entry of tests/runtime/known-findings.txt)")
     for fid, (n, tot, detail, _) in sorted(finding_boots.items()):
         st, why = descr.get(fid, ("OPEN", ""))
-        md.append(f"- **{fid[8:]}** [{st}]: observed in {n} of {tot} boots; runs affected: "
+        md.append(f"- **{fid[8:]}** [{st}]: observed in {n} of {tot} boots whose kernel log was scanned; runs affected: "
                   + ", ".join(rn for rn, rs in results.items() if any(r['counts']['finding'] for r in rs)))
         shown = re.sub(r"^\[[A-Z-]+\] ", "", detail)
         md.append(f"  - example log line: `{shown}`")
@@ -594,7 +598,7 @@ def main():
         print("RESULT: nothing was run")
         return 3
     for fid, (n, tot, _, _) in sorted(finding_boots.items()):
-        print(f"  OPEN FINDING {fid[8:]}: observed in {n} of {tot} boots (not accepted as normal; see summary)")
+        print(f"  OPEN FINDING {fid[8:]}: observed in {n} of {tot} scanned boots (not accepted as normal; see summary)")
     if failed_runs:
         print("RESULT: FAIL")
         return 1

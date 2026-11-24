@@ -100,7 +100,7 @@ good_log config hardening systemd measure logscan | sed 's/^XLIN-TEST: logscan s
 run 0 "an open finding does not fail the run by itself" --scenarios base
 if grep -q 'RESULT: PASS WITH OPEN FINDINGS' "$T/last.txt" && ! grep -q '^RESULT: PASS (' "$T/last.txt"; then ok "the run is reported as PASS WITH OPEN FINDINGS, not as a clean PASS"; else bad "finding run reported as clean"; fi
 if grep -q 'Verdict: PASS WITH OPEN FINDINGS' "$T/out/summary.md" && grep -q 'NOT a clean pass' "$T/out/summary.md"; then ok "the summary verdict says it is not a clean pass"; else bad "summary verdict does not flag the finding"; fi
-if grep -A4 'Open findings' "$T/out/summary.md" | grep -q 'W-X-CPA-ITS.*EXPLAINED-OPEN.*1 of 1 boots'; then ok "the finding is listed in the summary with its status and boot count"; else bad "finding missing from the summary"; fi
+if grep -A4 'Open findings' "$T/out/summary.md" | grep -q 'W-X-CPA-ITS.*EXPLAINED-OPEN.*1 of 1 boots whose kernel log was scanned'; then ok "the finding is listed in the summary with its status and boot count"; else bad "finding missing from the summary"; fi
 run 4 "--strict-findings turns an open finding into a non-zero exit" --scenarios base --strict-findings
 
 good_log config hardening systemd measure logscan >"$FAKE_LOG"
