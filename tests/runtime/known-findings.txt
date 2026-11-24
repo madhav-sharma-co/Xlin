@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# TIER 2 of the log scan: KNOWN, UNRESOLVED findings. These are NOT accepted as normal.
+# Format: ID <TAB> ERE <TAB> STATUS <TAB> summary (with a pointer to the evidence).
+# A kernel-log line that matches an entry is reported as XLIN-TEST: logscan finding-<ID> FINDING
+# in every boot where it appears. A run with a FINDING is not "clean": the host judge reports
+# PASS WITH OPEN FINDINGS, lists the finding (with how many boots showed it) in every summary,
+# and `xlin-runtime-test --strict-findings` turns it into a failing exit status.
+# An entry is removed only by a reviewed decision recorded in docs/RUNTIME-VALIDATION.md;
+# the scanner is never relaxed to make a finding disappear.
+# STATUS is one of: OPEN (not yet reviewed to a conclusion) | EXPLAINED-OPEN (cause identified,
+# but the residual risk or the upstream/Arch comparison is not closed).
+W-X-CPA-ITS	CPA detected W\^X violation	EXPLAINED-OPEN	kernel 6.18.64 x86 CPA W^X check (verify_rwx, pr_warn_once before rodata is read-only) fires for the ITS mitigation thunk page: its_alloc() calls set_memory_x() on a still-writable page during alternative_instructions(), made ROX again by its_fini_core(); only on CPUs where "ITS: Mitigation: Aligned branch/return thunks" is active. Final mappings checked clean by CONFIG_DEBUG_WX in the same boots. Not compared with Arch on an ITS-affected CPU; not reported upstream. See docs/RUNTIME-VALIDATION.md, "Open finding: CPA W^X"

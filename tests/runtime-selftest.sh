@@ -96,9 +96,66 @@ run 1 "the wrong kernel release fails" --scenarios base
 good_log config hardening systemd measure logscan | sed 's/^XLIN-TEST: systemd something PASS fine$/XLIN-TEST: systemd something SKIP reason given/' >"$FAKE_LOG"
 run 0 "an explained SKIP (not tested) is allowed and is not counted as a pass" --scenarios base
 
-good_log config hardening systemd measure logscan | sed 's/^XLIN-TEST: logscan something PASS fine/&\nXLIN-TEST: logscan finding INFO [    0.449975] CPA detected W^X violation/' >"$FAKE_LOG"
-run 0 "an open finding does not fail the run" --scenarios base
-if grep -A3 'Open findings' "$T/out/summary.md" | grep -q 'CPA detected'; then ok "the finding is listed in the summary"; else bad "finding missing from the summary"; fi
+good_log config hardening systemd measure logscan | sed 's/^XLIN-TEST: logscan something PASS fine/&\nXLIN-TEST: logscan finding-W-X-CPA-ITS FINDING [EXPLAINED-OPEN] [    0.449975] CPA detected W^X violation/' >"$FAKE_LOG"
+run 0 "an open finding does not fail the run by itself" --scenarios base
+if grep -q 'RESULT: PASS WITH OPEN FINDINGS' "$T/last.txt" && ! grep -q '^RESULT: PASS (' "$T/last.txt"; then ok "the run is reported as PASS WITH OPEN FINDINGS, not as a clean PASS"; else bad "finding run reported as clean"; fi
+if grep -q 'Verdict: PASS WITH OPEN FINDINGS' "$T/out/summary.md" && grep -q 'NOT a clean pass' "$T/out/summary.md"; then ok "the summary verdict says it is not a clean pass"; else bad "summary verdict does not flag the finding"; fi
+if grep -A4 'Open findings' "$T/out/summary.md" | grep -q 'W-X-CPA-ITS.*EXPLAINED-OPEN.*1 of 1 boots'; then ok "the finding is listed in the summary with its status and boot count"; else bad "finding missing from the summary"; fi
+run 4 "--strict-findings turns an open finding into a non-zero exit" --scenarios base --strict-findings
+
+good_log config hardening systemd measure logscan >"$FAKE_LOG"
+run 0 "a good log without a finding is a clean PASS" --scenarios base
+if grep -q '^RESULT: PASS (' "$T/last.txt" && grep -q 'Verdict: PASS - ' "$T/out/summary.md"; then ok "the clean verdict is used only when no finding was observed"; else bad "clean verdict wrong"; fi
+
+# ---- the guest-side log scanner itself (tests/runtime/suites/logscan.sh), run on the host ------
+S=$T/scan
+mkdir -p "$S/tests" "$S/tmp" "$S/bin"
+cp "$ROOT"/tests/runtime/lib.sh "$ROOT"/tests/runtime/dmesg-allowlist.txt "$ROOT"/tests/runtime/known-findings.txt "$S/tests/"
+echo 0 >"$S/taint"
+cat >"$S/bin/dmesg" <<'D'
+#!/bin/sh
+cat "$SCAN_LOG"
+D
+chmod +x "$S/bin/dmesg"
+scan() { # prints the scanner's XLIN-TEST lines for the log in $SCAN_LOG
+	SCAN_LOG="$S/log" PATH="$S/bin:$PATH" XLIN_TESTS="$S/tests" XLIN_TMP="$S/tmp" XLIN_TAINT_FILE="$S/taint" \
+		sh "$ROOT/tests/runtime/suites/logscan.sh" 2>&1
+}
+scan_expect() { # NAME PATTERN (must match)   /  scan_refuse NAME PATTERN (must not match)
+	local out
+	out=$(scan)
+	if grep -qE -e "$2" <<<"$out"; then ok "scanner: $1"; else bad "scanner: $1"; printf '%s\n' "$out" | sed 's/^/    | /'; fi
+}
+scan_refuse() {
+	local out
+	out=$(scan)
+	if grep -qE -e "$2" <<<"$out"; then bad "scanner: $1"; printf '%s\n' "$out" | sed 's/^/    | /'; else ok "scanner: $1"; fi
+}
+printf '<6>[    0.1] Linux version x\n<6>[    0.2] all quiet\n' >"$S/log"
+scan_expect "a quiet log passes" 'logscan kernel-log-no-unexpected PASS'
+scan_expect "an absent known finding is stated as not observed" 'logscan finding-W-X-CPA-ITS INFO not observed'
+scan_refuse "an absent known finding is not reported as a FINDING" ' FINDING '
+printf '<6>[    0.1] x\n<4>[    0.2] totally new warning: something broke\n' >"$S/log"
+scan_expect "an unknown warning FAILS" 'logscan unexpected FAIL'
+scan_refuse "an unknown warning never gets the clean pass" 'kernel-log-no-unexpected PASS'
+printf '<6>[    0.1] x\n<6>[    0.2] a harmless line with the word error in it\n' >"$S/log"
+scan_expect "an unknown line that merely mentions 'error' FAILS (words are scanned)" 'logscan unexpected FAIL'
+printf '<4>[    0.2] x86/split lock detection: #DB: warning on user-space bus_locks\n' >"$S/log"
+scan_expect "an allowlisted notice is INFO allowed" 'logscan allowed INFO'
+scan_expect "an allowlisted notice does not fail the scan" 'kernel-log-no-unexpected PASS'
+scan_refuse "an allowlisted notice is not a finding" ' FINDING '
+printf '<4>[    0.2] CPA detected W^X violation: 8000000000000123 -> 0000000000000123 range: 0xffffffffc0400000 - 0xffffffffc0400fff PFN 2000\n' >"$S/log"
+scan_expect "the W^X line is a FINDING with its ID and status" 'logscan finding-W-X-CPA-ITS FINDING \[EXPLAINED-OPEN\]'
+scan_refuse "the W^X line is not allowlisted" 'logscan allowed'
+scan_refuse "the W^X line is not an unexpected failure" 'logscan unexpected FAIL'
+printf '<4>[    0.2] tsc: Fast TSC calibration failed\n' >"$S/log"
+scan_expect "a TCG-scoped notice is UNEXPECTED on a KVM guest" 'logscan unexpected FAIL'
+printf '<6>[    0.0] smpboot: CPU0: AMD QEMU TCG CPU version 2.5+\n<4>[    0.2] tsc: Fast TSC calibration failed\n' >"$S/log"
+scan_expect "the same notice is INFO allowed on a TCG guest" 'logscan allowed INFO'
+echo 4096 >"$S/taint"
+printf '<6>[    0.1] x\n' >"$S/log"
+scan_expect "a tainted kernel fails" 'not-tainted FAIL'
+echo 0 >"$S/taint"
 
 # NOT TESTED: option absent from the build config is reported and is not a failure
 good_log config hardening systemd measure logscan >"$FAKE_LOG"
@@ -117,7 +174,7 @@ Q
 good_log config hardening systemd measure logscan >"$T/good"
 good_log config hardening systemd measure logscan | grep -v DONE >"$T/badlog"
 run 1 "alternating good/bad boots: the run fails" --scenarios base --repeat 4
-if grep -q '| 2 | 50%' "$T/out/summary.md"; then ok "flake rate 50% is reported"; else bad "flake rate not reported"; grep base "$T/out/summary.md"; fi
+if grep -q '| 2 | 0 | 50%' "$T/out/summary.md"; then ok "flake rate 50% is reported"; else bad "flake rate not reported"; grep base "$T/out/summary.md"; fi
 
 # an image that could not be built is reported with its reason
 run 3 "fs scenario without the modules image is NOT TESTED" --scenarios fs >/dev/null

@@ -12,6 +12,8 @@ pass() { say "$1" PASS "${2:-}"; }
 fail() { say "$1" FAIL "${2:-}"; }
 skip() { say "$1" SKIP "${2:-}"; }
 info() { say "$1" INFO "${2:-}"; }
+# finding NAME DETAIL -> a known, UNRESOLVED issue: reported in every run, never PASS, never FAIL
+finding() { say "$1" FINDING "${2:-}"; }
 metric() { echo "XLIN-METRIC: $1 $2 ${3:-}"; }
 
 # ok NAME DETAIL COMMAND...  -> PASS if the command succeeds, else FAIL

@@ -317,6 +317,13 @@ jobs:
             [ -f "$d/serial.log" ] || continue
             echo "::group::serial.log $d"; cat "$d/serial.log"; echo "::endgroup::"
           done
+          # known unresolved findings are never silent: one annotation per finding and run log
+          for f in runtime-all.log runtime-matrix.log runtime-tcg.log; do
+            grep -h 'OPEN FINDING' "$f" 2>/dev/null | while IFS= read -r l; do
+              echo "::warning title=Open kernel finding (not a clean pass)::$f: ${l#  }"
+            done
+            grep -h '^RESULT:' "$f" 2>/dev/null | sed "s/^/$f -> /" | tee -a "$GITHUB_STEP_SUMMARY" || true
+          done
           tail -n 60 runtime-all.log 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4

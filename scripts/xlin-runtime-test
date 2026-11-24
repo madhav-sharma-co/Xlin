@@ -49,7 +49,7 @@ def _load_boot_helpers():
 bt = _load_boot_helpers()
 cant = bt.cant
 
-TEST_RE = re.compile(r"^XLIN-TEST: (\S+) (\S+) (PASS|FAIL|SKIP|INFO)(?: (.*))?$", re.M)
+TEST_RE = re.compile(r"^XLIN-TEST: (\S+) (\S+) (PASS|FAIL|SKIP|INFO|FINDING)(?: (.*))?$", re.M)
 METRIC_RE = re.compile(r"^XLIN-METRIC: (\S+) (\S+)(?: (\S+))?\s*$", re.M)
 SUITE_RE = re.compile(r"^XLIN-SUITE: (\S+) (BEGIN|END)\s*$", re.M)
 SHA_RE = re.compile(r"^XLIN-CONFIG-SHA256: ([0-9a-f]{64})\s*$", re.M)
@@ -341,8 +341,12 @@ def evaluate(r, sc, ctx, text, expect):
     crit("finished within the time limit", not r["timed_out"], f"{r['seconds']}s of {r['timeout']}s")
     r["checks"] = [dict(ok=ok, name=n, detail=d) for ok, n, d in checks]
     r["tests"] = [dict(suite=a, name=b, status=c, detail=d) for a, b, c, d in tests]
-    r["counts"] = dict(pass_=len(passes), fail=len(fails), skip=len(skips))
+    findings = [t for t in tests if t[2] == "FINDING"]
+    r["counts"] = dict(pass_=len(passes), fail=len(fails), skip=len(skips), finding=len(findings))
     r["passed"] = all(ok for ok, _, _ in checks)
+    # "clean" = passed AND no known unresolved finding was observed. A finding never makes a
+    # run fail on its own, but it also never lets the run count as clean.
+    r["clean"] = r["passed"] and not findings
     if r["passed"]:
         r["classification"] = "none"
     elif "kernel" not in text.lower() and not text.strip():
@@ -375,6 +379,8 @@ def main():
     ap.add_argument("--scenarios", default="all", help="comma list, or 'all' (default); see --list")
     ap.add_argument("--matrix", choices=["none", "kvm", "tcg", "auto"], default="none",
                     help="also run the 'base' scenario over a vCPU/memory matrix (kvm: %s; tcg: %s)" % (MATRIX_KVM, MATRIX_TCG))
+    ap.add_argument("--strict-findings", action="store_true",
+                    help="exit with status 4 when every check passed but a known unresolved finding was observed")
     ap.add_argument("--repeat", type=int, default=1, help="boots per run (flake rate = failures / boots)")
     ap.add_argument("--accel", choices=["auto", "kvm", "tcg"], default="auto")
     ap.add_argument("--smp", type=int, default=2)
@@ -480,22 +486,41 @@ def main():
             for t in r["tests"]:
                 if t["status"] in ("FAIL",):
                     print(f"  FAIL {t['suite']}.{t['name']}: {t['detail']}")
-            print(f"  -> {'PASS' if r['passed'] else 'FAIL'} in {r['seconds']} s ({r['counts']['pass_']} passed, {r['counts']['fail']} failed, {r['counts']['skip']} not tested)"
+            print(f"  -> {('PASS WITH OPEN FINDINGS' if not r['clean'] else 'PASS') if r['passed'] else 'FAIL'} in {r['seconds']} s ({r['counts']['pass_']} passed, {r['counts']['fail']} failed, {r['counts']['skip']} not tested, {r['counts']['finding']} open finding(s))"
                   + ("" if r["passed"] else f"; classification: {r['classification']}; earliest error: {r['first_error']}"), flush=True)
 
     # ---- summary ---------------------------------------------------------------------------------
     failed_runs = [rn for rn, rs in results.items() if any(not r["passed"] for r in rs)]
+    finding_boots = {}   # finding id -> (boots with it, boots total, status text, example detail)
+    boots_total = sum(len(rs) for rs in results.values())
+    for rs in results.values():
+        for r in rs:
+            for t in r["tests"]:
+                if t["status"] == "FINDING":
+                    fid = t["name"]
+                    n, _, _, _ = finding_boots.get(fid, (0, 0, "", ""))
+                    finding_boots[fid] = (n + 1, boots_total, t["detail"], t["detail"])
+    unclean_runs = [rn for rn, rs in results.items() if any(not r["clean"] for r in rs) and rn not in failed_runs]
+    if failed_runs:
+        verdict_text = "FAIL"
+    elif finding_boots:
+        verdict_text = (f"PASS WITH OPEN FINDINGS - every check passed, but {len(finding_boots)} known unresolved finding(s) "
+                        f"were observed in {len(unclean_runs)} of {len(results)} runs; this is NOT a clean pass")
+    else:
+        verdict_text = "PASS - every check passed and no known finding was observed in these boots"
     md = ["# Xlin Kernel runtime validation", "",
           "**QEMU + OVMF virtual machine only. This is not physical-hardware, Xlin Boot or production-readiness evidence.**", "",
           f"Kernel `{ctx.kernel.name}` sha256 `{bt.sha256(ctx.kernel)}`; QEMU {bt.tool_version([ctx.qemu, '--version'])}; "
           f"accelerator {accel}; {args.repeat} boot(s) per run.", "",
-          "## Runs", "", "| Run | vCPU | MiB | Boots | Passed | Flake rate | Time median (s) | Time min–max (s) | checks passed / failed / not tested |", "|---|---|---|---|---|---|---|---|---|"]
+          f"**Verdict: {verdict_text}**", "",
+          "## Runs", "", "| Run | vCPU | MiB | Boots | Passed | Boots with open finding | Flake rate | Time median (s) | Time min–max (s) | checks passed / failed / not tested |", "|---|---|---|---|---|---|---|---|---|---|"]
     for rn, rs in results.items():
         p = sum(1 for r in rs if r["passed"])
         ts = [r["seconds"] for r in rs]
         flake = f"{(len(rs) - p) / len(rs) * 100:.0f}%"
         c = rs[-1]["counts"]
-        md.append(f"| {rn} | {rs[0]['smp']} | {rs[0]['mem']} | {len(rs)} | {p} | {flake} | {med(ts):.1f} | {min(ts):.1f}–{max(ts):.1f} | {c['pass_']} / {c['fail']} / {c['skip']} |")
+        nf = sum(1 for r in rs if r["counts"]["finding"])
+        md.append(f"| {rn} | {rs[0]['smp']} | {rs[0]['mem']} | {len(rs)} | {p} | {nf} | {flake} | {med(ts):.1f} | {min(ts):.1f}–{max(ts):.1f} | {c['pass_']} / {c['fail']} / {c['skip']} |")
     md += ["", "## Not tested", ""]
     md += [f"- **{n}**: {w}" for n, w in nottested] or ["- nothing was skipped"]
     md += ["", "## Failures", ""]
@@ -520,16 +545,24 @@ def main():
                 md.append(f"- {rn}: {t['suite']}.{t['name']}: {t['detail']}")
     if not seen:
         md.append("- none")
-    md += ["", "## Open findings (reviewed kernel-log lines that are NOT explained away)", ""]
-    fseen = set()
-    for rn, rs in results.items():
-        for t in rs[0]["tests"]:
-            text = re.sub(r"^\[\s*[\d.]+\] ", "", t["detail"])
-            if t["name"] == "finding" and text not in fseen:
-                fseen.add(text)
-                md.append(f"- seen in {', '.join(k for k, v in results.items() if any(x['name'] == 'finding' and re.sub(r'^\\[\\s*[\\d.]+\\] ', '', x['detail']) == text for x in v[0]['tests']))}: `{text}`")
-    if not fseen:
-        md.append("- none")
+    md += ["", "## Open findings (known, UNRESOLVED; not accepted as normal)", ""]
+    descr = {}
+    kf = ROOT / "tests" / "runtime" / "known-findings.txt"
+    if kf.exists():
+        for ln in kf.read_text().splitlines():
+            c = ln.split("\t")
+            if ln and not ln.startswith("#") and len(c) >= 4:
+                descr[f"finding-{c[0]}"] = (c[2], c[3])
+    if not finding_boots:
+        md.append("- none observed in these boots (the scanner still checks for every entry of tests/runtime/known-findings.txt)")
+    for fid, (n, tot, detail, _) in sorted(finding_boots.items()):
+        st, why = descr.get(fid, ("OPEN", ""))
+        md.append(f"- **{fid[8:]}** [{st}]: observed in {n} of {tot} boots; runs affected: "
+                  + ", ".join(rn for rn, rs in results.items() if any(r['counts']['finding'] for r in rs)))
+        shown = re.sub(r"^\[[A-Z-]+\] ", "", detail)
+        md.append(f"  - example log line: `{shown}`")
+        if why:
+            md.append(f"  - {why}")
     md += ["", "## Informational measurements (never gating)", "",
            "Medians over the boots of each run; shared CI runners are noisy, so differences of a few percent are not meaningful.", "",
            "| Run | metric | median | min | max | n |", "|---|---|---|---|---|---|"]
@@ -542,7 +575,7 @@ def main():
     for rn, rs in results.items():
         md += [f"### {rn}", "", "| Status | Check | Detail |", "|---|---|---|"]
         for t in rs[0]["tests"]:
-            if t["status"] != "INFO" or t["name"] not in ("allowed", "size", "mac"):
+            if t["status"] != "INFO" or t["name"] not in ("allowed", "size", "mac") and not t["detail"].startswith("not observed"):
                 md.append(f"| {t['status']} | {t['suite']}.{t['name']} | {t['detail'].replace('|', '/')[:300]} |")
         md.append("")
     (out / "summary.md").write_text("\n".join(md) + "\n")
@@ -560,9 +593,14 @@ def main():
     if not results:
         print("RESULT: nothing was run")
         return 3
+    for fid, (n, tot, _, _) in sorted(finding_boots.items()):
+        print(f"  OPEN FINDING {fid[8:]}: observed in {n} of {tot} boots (not accepted as normal; see summary)")
     if failed_runs:
         print("RESULT: FAIL")
         return 1
+    if finding_boots:
+        print(f"RESULT: PASS WITH OPEN FINDINGS (all checks passed; {len(finding_boots)} known unresolved finding(s) observed - NOT a clean pass)")
+        return 4 if args.strict_findings else 0
     print("RESULT: PASS (every run that could be run passed; see NOT TESTED above for what could not)")
     return 0
 

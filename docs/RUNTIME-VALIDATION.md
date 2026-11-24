@@ -19,6 +19,7 @@ The existing source, configuration, build and boot checks (Steps 2–5) are unch
 | Probe-to-option map tool | `scripts/xlin-probe-map` |
 | Guest `/init`, helpers, suites | `tests/runtime/` |
 | Reviewed kernel-log allowlist | `tests/runtime/dmesg-allowlist.txt` |
+| Known unresolved findings | `tests/runtime/known-findings.txt` |
 | Test disk images builder | `scripts/xlin-test-images` |
 | Initramfs builder (`--runtime`, `--kmod`) | `scripts/xlin-initramfs` |
 | Host runner and judge | `scripts/xlin-runtime-test` |
@@ -79,7 +80,13 @@ The boot matrix runs `base` over vCPU counts 1, 2, 4, 8 and memory 256 MiB to 4 
 
 ## Kernel-log scan
 
-`tests/runtime/dmesg-allowlist.txt` lists reviewed lines, each with the reason it is accepted. A kernel-log line that looks like a warning or error and matches no entry fails the run. Entries starting `FINDING:` are real open issues that are reviewed but **not** explained away: they are listed as open findings in every summary.
+The `logscan` suite scans the whole kernel log. Every line that looks like a warning or error (level warning or worse, or words such as warning/error/fail/BUG/Oops/taint/lockdep) falls into exactly one of three tiers:
+
+1. **Accepted environment notice** — listed with a reason in `tests/runtime/dmesg-allowlist.txt`. Reported as `INFO allowed`. An entry may carry the scope `tcg`, meaning it is accepted only when the guest runs under QEMU software emulation (recognised by the CPU model name `QEMU TCG CPU`); under KVM the same line fails.
+2. **Known, unresolved finding** — listed in `tests/runtime/known-findings.txt` with an ID and a status (`OPEN` or `EXPLAINED-OPEN`). Reported as `FINDING` in every boot where it appears and as `INFO ... not observed in this boot` where it does not. It does not fail a run, but it is never accepted either: the run is reported as **PASS WITH OPEN FINDINGS** (not a clean pass), the summary carries the verdict, the finding, its status and the number of boots in which it appeared, CI prints a warning annotation, and `xlin-runtime-test --strict-findings` turns it into exit status 4.
+3. **Unexpected** — anything else. `FAIL`.
+
+The scanner was not relaxed to introduce tier 2; `tests/runtime-selftest.sh` runs the scanner script itself against canned logs (unknown warning fails, allowlisted notice passes, a known finding is a FINDING and not allowlisted, TCG-scoped notice fails on a KVM guest, tainted kernel fails).
 
 ## Test components and licensing
 
@@ -107,7 +114,7 @@ Observed in CI on 2026-11-22/23 with the pinned Linux 6.18.64 and the approved c
 
 **KVM boot matrix:** 1/2/4/8 vCPUs with 256 MiB to 4 GiB, 3 boots each, 24 boots, **0 failures (flake rate 0%)**; boot-to-power-off 4.0–5.0 s.
 
-**TCG (software emulation):** reduced matrix, 2 boots each (8 boots). Across the CI runs, three kernel-log notices appeared only under TCG and were reviewed and allowlisted with reasons: inconsistent MTRR notices with more than one vCPU, `tsc: Unable to calibrate against PIT` and `tsc: Fast TSC calibration failed`. Each of the two TSC notices appeared in **1 of 8** TCG boots in a different CI run (an intermittent flake of the software-emulated clock on a busy host; not observed under KVM). Before they were allowlisted, each made the affected run fail. Boots took about 14–16 s.
+**TCG (software emulation):** reduced matrix, 2 boots each (8 boots). Across the CI runs, three kernel-log notices appeared only under TCG and were reviewed and allowlisted with reasons and with the scope `tcg` (accepted only on a guest running under software emulation): inconsistent MTRR notices with more than one vCPU, `tsc: Unable to calibrate against PIT` and `tsc: Fast TSC calibration failed`. Each of the two TSC notices appeared in **1 of 8** TCG boots in a different CI run (an intermittent flake of the software-emulated clock on a busy host; not observed under KVM). Before they were allowlisted, each made the affected run fail. Boots took about 14–16 s.
 
 **Hardening probes:** see `tests/runtime/probes.tsv` for each probe and its required options. In the approved configuration all 44 probes map to existing Kconfig symbols and, for the checks listed, to options that are set. Deviations, reported rather than fixed:
 
@@ -116,9 +123,28 @@ Observed in CI on 2026-11-22/23 with the pinned Linux 6.18.64 and the approved c
 * The LSM list contains SELinux and no `bpf` LSM, as the approved configuration implies.
 * Config-only probes are labelled as such.
 
-**Open finding.** In some runs the kernel prints `CPA detected W^X violation: ... range: 0xffffffffc0200000 ...` once during early boot. It appeared in the first CI runs and in one later run, and not in others; the CI job's host CPU differs between runs and was not recorded, so the dependency on the host is a suspicion, not a result. The Arch kernel's baseline runs showed no such line. It is kept visible as a finding in every summary. It has not been diagnosed and has not been shown to be harmless.
+**Open finding W-X-CPA-ITS: `CPA detected W^X violation` (status EXPLAINED-OPEN; listed in `tests/runtime/known-findings.txt`).**
 
-**Other reviewed notices** (allowlisted with reasons in `tests/runtime/dmesg-allowlist.txt`): split-lock informational notice; missing `regulatory.db` (no firmware in the test initramfs); the PCI `pci=nocrs` hint; AMD "Speculative Return Stack Overflow" microcode notice, `amd_pstate` missing `_CPC` and `amd_pstate` CPPC disabled (these depend on which CPU the CI runner has, as seen by the VM; each new runner CPU type can bring a new notice, which will fail the log scan until reviewed — that fragility is inherent to scanning logs on shared runners).
+*What is printed:* `CPA detected W^X violation: 8000000000000123 -> 0000000000000123 range: 0xffffffffc0400000 - 0xffffffffc0400fff PFN 2000`, about 0.45 s into boot, between `ITS: Mitigation: Aligned branch/return thunks` (0.43 s) and `Freeing SMP alternatives memory` (0.47 s). The page protections show the NX bit being cleared on one 4 KiB page of a read-write mapping (read-write → read-write-executable) in the module/execmem area (`0xffffffffc0...`, physical page 0x2000, i.e. 32 MiB).
+
+*Code path (Linux 6.18.64, read, not modified):* `verify_rwx()` in `arch/x86/mm/pat/set_memory.c`. While `kernel_set_to_readonly` is still 0 (before `mark_rodata_ro()`), it only does `pr_warn_once()` — the comment there says "could be a false positive" — after that point the same condition would be a `WARN_ONCE` with a call trace. The caller is `its_alloc()` in `arch/x86/kernel/alternative.c`: the Indirect Target Selection (ITS) mitigation allocates a page for its aligned branch thunks and calls `set_memory_x()` on it while the page is still writable, then fills it; `its_fini_core()` later calls `execmem_restore_rox()` on these pages when `CONFIG_STRICT_KERNEL_RWX=y`. The page is therefore writable+executable for the short window of `alternative_instructions()` in single-threaded early boot (one CPU, no user space, no modules loaded yet).
+
+*Evidence from the CI logs (10 runtime-test jobs, 438 serial logs of boots):*
+
+| CI host CPU seen by the guest | boots | boots with the line | boots with `ITS: Mitigation: Aligned branch/return thunks` |
+|---|---|---|---|
+| Intel Xeon 6975P-C (model 0xad), KVM | 277 (7 CI runs) | 277 | 277 |
+| AMD EPYC 9V74, KVM | 86 (2 runs) | 0 | 0 |
+| AMD EPYC 7763, KVM | 19 (1 run) | 0 | 0 |
+| QEMU TCG CPU (software emulation) | 56 | 0 | 0 |
+
+The line is **not intermittent within a host type**: it appears in every boot on the Intel host class and in none elsewhere, and it tracks the ITS message exactly. Whether a given CI job shows it depends on which runner CPU the job was given (an earlier wording in this document, "in some runs / one later run", and the allowlist wording "in every QEMU/KVM boot", were both wrong; the first because the host CPU was not looked at, the second because AMD and TCG boots never show it). Because the guest runs with `-cpu host`, the ITS mitigation is selected from the host CPU's vulnerability bits.
+
+*State after boot:* in the same 277 boots the kernel's own `CONFIG_DEBUG_WX` check reports `Checked W+X mappings: passed, no W+X pages found.` (as it does in all 438 boots), i.e. no writable+executable mapping is left once the kernel text is read-only. `Write protecting the kernel read-only data` is also present.
+
+*Classification:* a transient boot-time W^X window created by the upstream ITS mitigation code of 6.18.64, not by Xlin's configuration (`CONFIG_CPU_MITIGATIONS=y` is the only related option set in Xlin's configuration, and ITS is a default-on part of it). It is not a persistent W+X mapping on the evidence above. It is nevertheless kept as an **open** finding because: (1) the Arch `linux-lts` baseline job has so far run on AMD hosts only, so the same kernel version with Arch's configuration has **not** been compared on an ITS-affected CPU (not shown to be the same; expected to be, since the code is upstream, but not verified); (2) the DEBUG_WX check is a snapshot after boot and says nothing about the window itself; (3) it has not been checked against, or reported to, the upstream kernel developers; (4) it has not been demonstrated on any CPU other than the one Intel model above. The kernel configuration and source were deliberately **not** changed to make the line disappear (e.g. by turning off the mitigation).
+
+**Other reviewed notices** (tier 1, allowlisted with reasons in `tests/runtime/dmesg-allowlist.txt`): split-lock informational notice; missing `regulatory.db` (no firmware in the test initramfs); the PCI `pci=nocrs` hint; AMD "Speculative Return Stack Overflow" microcode notice, `amd_pstate` missing `_CPC` and `amd_pstate` CPPC disabled (these depend on which CPU the CI runner has, as seen by the VM; each new runner CPU type can bring a new notice, which will fail the log scan until reviewed — that fragility is inherent to scanning logs on shared runners).
 
 **Problems found in the test setup while building it (not kernel faults):** BusyBox's shell ran its own `modprobe` applet instead of kmod; the kernel's own module requests had no helper (`kernel.modprobe`), which made Btrfs fail on `crc32c` until fixed; a virtual `sit0` interface was mistaken for a NIC; an empty CD-ROM drive made the kernel log complaints when probed.
 

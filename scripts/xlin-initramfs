@@ -73,7 +73,7 @@ done
 if [ "$runtime" = 1 ]; then
 	init="$ROOT/tests/runtime/init"
 	[ -f "$init" ] || cant "init script not found: $init"
-	for f in lib.sh probes.sh probes.tsv dmesg-allowlist.txt udhcpc.script reboot-cycle; do
+	for f in lib.sh probes.sh probes.tsv dmesg-allowlist.txt known-findings.txt udhcpc.script reboot-cycle; do
 		[ -f "$ROOT/tests/runtime/$f" ] || cant "tests/runtime/$f is missing"
 	done
 fi
@@ -123,7 +123,7 @@ gcc -O1 -o "$tmp/gen_init_cpio" "$src/usr/gen_init_cpio.c" || xlin_die "could no
 	echo "file /init $init 0755 0 0"
 	echo "file /bin/xlin-pass $ROOT/tests/boot/xlin-pass 0755 0 0"
 	if [ "$runtime" = 1 ]; then
-		for f in lib.sh probes.sh probes.tsv dmesg-allowlist.txt; do echo "file /tests/$f $ROOT/tests/runtime/$f 0644 0 0"; done
+		for f in lib.sh probes.sh probes.tsv dmesg-allowlist.txt known-findings.txt; do echo "file /tests/$f $ROOT/tests/runtime/$f 0644 0 0"; done
 		for f in udhcpc.script reboot-cycle; do echo "file /tests/$f $ROOT/tests/runtime/$f 0755 0 0"; done
 		for f in "$ROOT"/tests/runtime/suites/*.sh; do echo "file /tests/suites/${f##*/} $f 0644 0 0"; done
 	fi
