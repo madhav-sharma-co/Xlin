@@ -580,7 +580,7 @@ def main():
         md += [f"### {rn}", "", "| Status | Check | Detail |", "|---|---|---|"]
         for t in rs[0]["tests"]:
             if t["status"] != "INFO" or t["name"] not in ("allowed", "size", "mac") and not t["detail"].startswith("not observed"):
-                md.append(f"| {t['status']} | {t['suite']}.{t['name']} | {t['detail'].replace('|', '/')[:300]} |")
+                md.append(f"| {t['status']} | {t['suite']}.{t['name']} | {t['detail'].replace('|', '/')[:1500]} |")
         md.append("")
     (out / "summary.md").write_text("\n".join(md) + "\n")
     (out / "results.json").write_text(json.dumps(dict(runs=results, not_tested=nottested, accel=accel,

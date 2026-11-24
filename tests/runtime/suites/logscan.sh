@@ -18,7 +18,7 @@ tcg=0
 grep -q 'QEMU TCG CPU' "$TMPD/dmesg.raw" && tcg=1
 # allowlist entries with scope "tcg" apply only to TCG guests
 : >"$TMPD/allow.ere"
-: >"$TMPD/finding.seen"
+rm -f "$TMPD"/finding.*
 awk -F'\t' -v tcg="$tcg" -v out="$TMPD/allow.ere" '!/^#/ && NF >= 2 { if ($3 == "tcg" && tcg != 1) next; print $1 >> out }' "$TD/dmesg-allowlist.txt"
 bad=0
 allowed=0
@@ -37,9 +37,17 @@ while IFS= read -r line; do
 		if echo "$text" | grep -qE -e "$ere"; then fid="$id $status"; break; fi
 	done <"$TD/known-findings.txt"
 	if [ -n "$fid" ]; then
+		# one FINDING per known finding and boot (with the number of lines and the first one),
+		# so a multi-line kernel dump is one finding, not dozens
 		findings=$((findings + 1))
-		echo "$fid" >>"$TMPD/finding.seen"
-		finding "finding-${fid%% *}" "[${fid#* }] $text"
+		key=${fid%% *}
+		if [ -f "$TMPD/finding.$key" ]; then
+			n=$(sed -n 1p "$TMPD/finding.$key")
+			{ echo $((n + 1)); sed -n '2,3p' "$TMPD/finding.$key"; } >"$TMPD/finding.$key.new" && mv "$TMPD/finding.$key.new" "$TMPD/finding.$key"
+		else
+			printf '1\n%s\n%s\n' "${fid#* }" "$text" >"$TMPD/finding.$key"
+			echo "$key" >>"$TMPD/finding.seen"
+		fi
 	elif [ -s "$TMPD/allow.ere" ] && echo "$text" | grep -qE -f "$TMPD/allow.ere"; then
 		allowed=$((allowed + 1))
 		info allowed "$text"
@@ -48,10 +56,18 @@ while IFS= read -r line; do
 		fail unexpected "$text"
 	fi
 done <"$TMPD/dmesg.raw"
-# a known finding that did not appear in this boot is stated too, so its frequency is measurable
+# one result per known finding: FINDING if it appeared in this boot, else an explicit "not observed"
+# (so how often it appears can be measured, never assumed)
 while IFS="$(printf '\t')" read -r id _ere _status _rest; do
 	case "$id" in '#'* | '') continue ;; esac
-	if ! grep -q "^$id " "$TMPD/finding.seen" 2>/dev/null; then info "finding-$id" "not observed in this boot"; fi
+	if [ -f "$TMPD/finding.$id" ]; then
+		n=$(sed -n 1p "$TMPD/finding.$id")
+		st=$(sed -n 2p "$TMPD/finding.$id")
+		first=$(sed -n 3p "$TMPD/finding.$id")
+		finding "finding-$id" "[$st] $n line(s); first: $first"
+	else
+		info "finding-$id" "not observed in this boot"
+	fi
 done <"$TD/known-findings.txt"
 metric kernel_log_allowlisted "$allowed" lines
 metric kernel_log_findings "$findings" lines

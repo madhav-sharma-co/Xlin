@@ -148,6 +148,14 @@ printf '<4>[    0.2] CPA detected W^X violation: 8000000000000123 -> 00000000000
 scan_expect "the W^X line is a FINDING with its ID and status" 'logscan finding-W-X-CPA-ITS FINDING \[EXPLAINED-OPEN\]'
 scan_refuse "the W^X line is not allowlisted" 'logscan allowed'
 scan_refuse "the W^X line is not an unexpected failure" 'logscan unexpected FAIL'
+printf '<3>[    0.2] XFEATURE_XTILE_DATA: calculated size is 0 bytes, cpu state 8192 bytes\n<3>[    0.3] CPUID[0d, 00]: eax=000600e7 ebx=00002b00 ecx=00002b00 edx=00000000\n<3>[    0.4] CPUID[0d, 01]: eax=0000001f ebx=000029c0 ecx=00000000 edx=00000000\n' >"$S/log"
+scan_expect "a multi-line kernel dump of a known finding is ONE FINDING with its line count" 'logscan finding-XTILE-CPUID FINDING \[EXPLAINED-OPEN\] 3 line\(s\)'
+scan_refuse "that dump is not reported as unexpected" 'logscan unexpected'
+printf '<3>[    0.2] XFEATURE_XTILE_DATA: struct is 8192 bytes, cpu xtile 1024 bytes\n' >"$S/log"
+scan_expect "a different XTILE error is NOT covered by the finding and FAILS" 'logscan unexpected FAIL'
+printf '<4>[    0.2] CPA detected W^X violation: 1 -> 2 range: 0x1 - 0x2 PFN 1\n<4>[    0.3] brand new warning: boom\n' >"$S/log"
+scan_expect "a known finding does not hide an unexpected warning next to it" 'logscan unexpected FAIL'
+scan_expect "... and the finding is still reported" 'logscan finding-W-X-CPA-ITS FINDING'
 printf '<4>[    0.2] tsc: Fast TSC calibration failed\n' >"$S/log"
 scan_expect "a TCG-scoped notice is UNEXPECTED on a KVM guest" 'logscan unexpected FAIL'
 printf '<6>[    0.0] smpboot: CPU0: AMD QEMU TCG CPU version 2.5+\n<4>[    0.2] tsc: Fast TSC calibration failed\n' >"$S/log"
