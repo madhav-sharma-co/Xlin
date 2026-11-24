@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Xlin W^X compare: count, per kernel, what each boot log says about the ITS mitigation, the CPA
+W^X notice and the post-boot CONFIG_DEBUG_WX check.
+
+  xlin-wx-compare LABEL=DIR [LABEL=DIR ...]
+
+DIR holds <run>/serial.log files made by xlin-runtime-test. It only reads logs and prints a
+markdown table; it never decides that a finding is harmless.
+"""
+import glob
+import os
+import re
+import sys
+
+
+def scan(d):
+    rows = []
+    for f in sorted(glob.glob(os.path.join(d, "*", "serial.log"))):
+        t = open(f, errors="replace").read()
+        rel = re.search(r"Linux version (\S+)", t)
+        cpu = re.search(r"smpboot: CPU0: (.*?)(?: \(family|\r|\n)", t)
+        v2 = re.search(r"Spectre V2 : (Mitigation: [A-Za-z /]+)", t)
+        rows.append(dict(
+            release=rel.group(1) if rel else "?",
+            cpu=(cpu.group(1).strip() if cpu else "?"),
+            v2=(v2.group(1).strip() if v2 else "?"),
+            its="ITS: Mitigation" in t,
+            its_line=(re.search(r"ITS: [^\r\n]*", t) or [""])[0],
+            cpa="CPA detected W^X violation" in t,
+            wx_ok="no W+X pages found" in t,
+            wx_line=(re.search(r"Checked W\+X mappings: [^\r\n]*", t) or [""])[0],
+            rodata="Write protecting the kernel read-only data" in t,
+        ))
+    return rows
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    out = ["| kernel | host CPU (as the guest sees it) | guest Spectre-v2 mode | boots | ITS message | CPA W^X notice | DEBUG_WX \"no W+X pages found\" | rodata write-protected |",
+           "|---|---|---|---|---|---|---|---|"]
+    for arg in sys.argv[1:]:
+        label, d = arg.split("=", 1)
+        groups = {}
+        for r in scan(d):
+            groups.setdefault((r["release"], r["cpu"], r["v2"]), []).append(r)
+        if not groups:
+            out.append(f"| {label} (no boot logs in {d}) | | | 0 | | | | |")
+        for (rel, cpu, v2), rs in sorted(groups.items()):
+            n = len(rs)
+            out.append(f"| {label} {rel} | {cpu} | {v2} | {n} | {sum(r['its'] for r in rs)} of {n} | {sum(r['cpa'] for r in rs)} of {n} | {sum(r['wx_ok'] for r in rs)} of {n} | {sum(r['rodata'] for r in rs)} of {n} |")
+        for r in scan(d)[:1]:
+            out.append(f"|   first boot: `{r['its_line'] or 'no ITS line'}`; `{r['wx_line'] or 'no DEBUG_WX line'}` | | | | | | | |")
+    print("\n".join(out))
+
+
+if __name__ == "__main__":
+    main()
