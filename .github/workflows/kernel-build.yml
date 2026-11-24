@@ -400,10 +400,33 @@ jobs:
             --images /nonexistent --scenarios base,stress --repeat 3 --expect-release "$rel" \
             --out build/arch/run 2>&1 | tee arch.log || true
 
+      - uses: actions/download-artifact@v4
+        if: always()
+        with:
+          name: xlin-kernel-build
+          path: artifact
+          run-id: ${{ inputs.build_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Control, the XLIN kernel under this container's QEMU (to separate kernel from QEMU/host effects)
+        if: always()
+        run: |
+          # Xlin's own runtime job uses the runner's QEMU (Ubuntu), this job uses Arch's newer QEMU. What
+          # a guest sees of the host CPU (and so which mitigations and early-boot messages appear)
+          # depends on the QEMU version as well as on the kernel. Booting the Xlin kernel here, with the
+          # same QEMU and on the same job host as the Arch kernel above, makes the comparison fair.
+          set -o pipefail
+          python3 scripts/xlin-runtime-test --kernel artifact/report/bzImage --initramfs rt/initramfs.cpio.zst \
+            --images /nonexistent --config artifact/report/config-final --scenarios base --repeat 3 \
+            --out build/arch/xlin-control 2>&1 | tee arch-control.log || true
+          for d in build/arch/xlin-control/*/; do [ -f "$d/serial.log" ] && { echo "::group::control serial.log $d"; cat "$d/serial.log"; echo "::endgroup::"; }; done
+          true
+
       - name: Arch baseline report
         if: always()
         run: |
           cat build/arch/run/summary.md 2>/dev/null || tail -n 40 arch.log
+          cat build/arch/xlin-control/summary.md 2>/dev/null || true
           for d in build/arch/run/*/; do [ -f "$d/serial.log" ] && { echo "::group::serial.log $d"; cat "$d/serial.log"; echo "::endgroup::"; }; done
           true
 
@@ -414,6 +437,8 @@ jobs:
           path: |
             build/arch/run/summary.md
             build/arch/run/results.json
+            build/arch/xlin-control/summary.md
+            build/arch/xlin-control/results.json
           if-no-files-found: warn
           retention-days: 14
 
