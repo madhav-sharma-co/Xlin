@@ -11,9 +11,6 @@
 name: W^X newer-kernel research
 
 on:
-  pull_request:
-    # a way to start this research on the PR branch when the workflow file is not on the default branch yet
-    paths: [".github/workflows/wx-newer-kernels.yml", "scripts/xlin-wx-compare"]
   workflow_dispatch:
     inputs:
       xlin_build_run_id:
