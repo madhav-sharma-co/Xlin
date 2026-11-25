@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Axion Co.
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# RESEARCH, NON-GATING, manual only: where does the runtime finding XTILE-CPUID come from?
+# RESEARCH, NON-GATING: where does the runtime finding XTILE-CPUID come from?
 # (guest CPUID leaf 0x1d empty while leaf 0xd advertises 8192 bytes of AMX tile state.)
 #
 # Each job records, in this order: what the CI runner's CPU reports natively, what the runner's
