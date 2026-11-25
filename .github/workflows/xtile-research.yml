@@ -1,0 +1,142 @@
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RESEARCH, NON-GATING, manual only: where does the runtime finding XTILE-CPUID come from?
+# (guest CPUID leaf 0x1d empty while leaf 0xd advertises 8192 bytes of AMX tile state.)
+#
+# Each job records, in this order: what the CI runner's CPU reports natively, what the runner's
+# KVM offers a VMM (KVM_GET_SUPPORTED_CPUID), and what guests see when the pinned Xlin kernel and
+# two vanilla kernels (6.18.y stable, mainline; built from the Xlin config by the W^X research
+# workflow) are booted in the same job under the same QEMU with different -cpu models, plus a
+# functional AMX test in the guest. Nothing here changes Xlin's source, configuration or pin, and
+# nothing is allowlisted: tests/runtime/known-findings.txt is untouched.
+name: XTILE-CPUID research
+
+on:
+  workflow_dispatch:
+    inputs:
+      xlin_build_run_id:
+        description: "Kernel build run with the pinned Xlin kernel (artifact xlin-kernel-build)"
+        required: false
+        default: "45369210790"
+      kernels_run_id:
+        description: "Run of 'W^X newer-kernel research' whose wx-kernel-stable / wx-kernel-mainline artifacts are used"
+        required: false
+        default: "45415218265"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4, 5, 6]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install QEMU, OVMF, busybox-static, zstd
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf busybox-static zstd file
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlin-kernel-build
+          path: k/pinned
+          run-id: ${{ inputs.xlin_build_run_id || '45369210790' }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: wx-kernel-stable
+          path: k/stable
+          run-id: ${{ inputs.kernels_run_id || '45415218265' }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: wx-kernel-mainline
+          path: k/mainline
+          run-id: ${{ inputs.kernels_run_id || '45415218265' }}
+          github-token: ${{ github.token }}
+
+      - name: Fetch the pinned source tree (only usr/gen_init_cpio.c is needed) and verify the pin
+        run: |
+          set -eu
+          ./scripts/xlin-fetch 2>&1 | tail -n 5
+
+      - name: Host and tool record
+        run: |
+          mkdir -p out
+          {
+            echo "### Runner"
+            echo '```'
+            grep -m1 'model name' /proc/cpuinfo; uname -r; nproc
+            grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | grep -E '^(amx|xsave|xfd|avx512f|pku|hypervisor)' | tr '\n' ' '; echo
+            systemd-detect-virt || true
+            qemu-system-x86_64 --version | head -n1
+            dpkg-query -W -f '${Package} ${Version}\n' qemu-system-x86 ovmf busybox-static
+            echo '```'
+          } | tee out/host.md | tee -a "$GITHUB_STEP_SUMMARY"
+          qemu-system-x86_64 -cpu help | grep -iE 'amx|SapphireRapids|GraniteRapids|EmeraldRapids|^ *host' >out/qemu-cpu-help-amx.txt || true
+
+      - name: Build the research initramfs and probe
+        run: |
+          set -eu
+          bash tests/research/xtile/build-initramfs.sh out/xtile-initramfs.cpio.zst | tee out/initramfs-hashes.txt
+          gcc -O1 -static -o out/xtile-probe tests/research/xtile/xtile-probe.c
+
+      - name: "Level 1+2: the runner's own CPUID and what its KVM offers QEMU"
+        run: |
+          set -u
+          { echo "== runner native (this is itself a VM; this is what QEMU -cpu host can pass on)"; out/xtile-probe all; echo; echo "== kvm"; out/xtile-probe kvm; } 2>&1 | tee out/runner-probe.txt | sed -n '1,200p'
+
+      - name: "Level 3: guests (same job, same QEMU)"
+        run: |
+          set -u
+          [ -e /dev/kvm ] && A=kvm || A=tcg
+          echo "accel=$A" | tee out/accel.txt
+          for k in pinned stable mainline; do
+            kernel=$(find k/$k -name bzImage | head -n1)
+            for round in 1 2; do
+              bash tests/research/xtile/boot.sh out/guests "$k-host-r$round" "$kernel" out/xtile-initramfs.cpio.zst "$A" host 3
+            done
+          done
+          kernel=$(find k/pinned -name bzImage | head -n1)
+          if [ "$A" = kvm ]; then
+            bash tests/research/xtile/boot.sh out/guests "pinned-host-amxflags" "$kernel" out/xtile-initramfs.cpio.zst kvm 'host,+amx-tile,+amx-int8,+amx-bf16' 3
+            bash tests/research/xtile/boot.sh out/guests "pinned-host-noamxtile" "$kernel" out/xtile-initramfs.cpio.zst kvm 'host,-amx-tile' 2
+            bash tests/research/xtile/boot.sh out/guests "pinned-SapphireRapids" "$kernel" out/xtile-initramfs.cpio.zst kvm SapphireRapids 3
+          fi
+          bash tests/research/xtile/boot.sh out/guests "pinned-tcg-max" "$kernel" out/xtile-initramfs.cpio.zst tcg max 2
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Guest boots (values are quoted from each serial log; nothing is judged here)"
+            echo
+            python3 -I tests/research/xtile/summarize.py out/guests
+          } | tee out/summary.md | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xtile-research-${{ matrix.n }}
+          path: |
+            out/*.md
+            out/*.txt
+            out/guests/*/serial.log
+            out/guests/*/qemu-command.txt
+            out/guests/*/meta.txt
+          if-no-files-found: warn
+          retention-days: 30

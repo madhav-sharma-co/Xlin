@@ -1,0 +1,17 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# /init of the XTILE-CPUID research initramfs (BusyBox + /xtile-probe only; not a gating test).
+export PATH=/bin:/sbin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+echo "XTILE-GUEST: BEGIN release=$(uname -r)"
+grep -m1 'model name' /proc/cpuinfo | sed 's/^/XTILE-GUEST: /'
+echo "XTILE-GUEST: cpuinfo flags of interest: $(grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | grep -E '^(amx|xsave|xfd|avx512f|pku|hypervisor)' | tr '\n' ' ')"
+dmesg | grep -E 'XFEATURE_XTILE|x86/fpu|Supporting XSAVE' | sed 's/^/XTILE-GUEST: dmesg: /'
+echo "XTILE-GUEST: check_message_count=$(dmesg | grep -c 'XFEATURE_XTILE_DATA: ')"
+/xtile-probe all
+echo "XTILE-GUEST: DONE"
+poweroff -f
+sleep 10
