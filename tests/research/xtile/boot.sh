@@ -5,7 +5,7 @@
 # usage: boot.sh OUTDIR LABEL KERNEL INITRAMFS ACCEL CPU REPEAT
 set -uo pipefail
 outdir=$1; label=$2; kernel=$3; initrd=$4; accel=$5; cpu=$6; n=$7
-code=/usr/share/OVMF/OVMF_CODE_4M.fd; vars=/usr/share/OVMF/OVMF_VARS_4M.fd
+code=${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}; vars=${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}
 for i in $(seq 1 "$n"); do
 	d="$outdir/$label-$i"; mkdir -p "$d"; cp "$vars" "$d/vars.fd"
 	cmd=(qemu-system-x86_64 -machine "q35,accel=$accel" -cpu "$cpu" -m 1024 -smp 2 -display none -monitor none

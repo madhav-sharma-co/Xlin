@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -161,6 +161,106 @@ jobs:
           path: |
             out/*.md
             out/*.txt
+            out/guests/*/serial.log
+            out/guests/*/qemu-command.txt
+            out/guests/*/meta.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+  initramfs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends busybox-static zstd file
+          ./scripts/xlin-fetch 2>&1 | tail -n 3
+          mkdir -p out
+          bash tests/research/xtile/build-initramfs.sh out/xtile-initramfs.cpio.zst | tee out/initramfs-hashes.txt
+          gcc -O1 -static -o out/xtile-probe tests/research/xtile/xtile-probe.c
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xtile-initramfs
+          path: |
+            out/xtile-initramfs.cpio.zst
+            out/xtile-probe
+            out/initramfs-hashes.txt
+          retention-days: 30
+
+  # The same guest under Arch's newer QEMU (the container's package) and Arch's own linux-lts kernel:
+  # an independent upstream-configured baseline kernel under a second QEMU version.
+  arch:
+    needs: initramfs
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: archlinux:latest
+      options: --device /dev/kvm
+    steps:
+      - name: Install Arch linux-lts, QEMU and OVMF
+        run: |
+          pacman -Syu --noconfirm --noprogressbar
+          pacman -S --noconfirm --noprogressbar --needed qemu-system-x86 edk2-ovmf linux-lts python git nodejs
+          pacman -Q linux-lts qemu-system-x86 edk2-ovmf | tee host-packages.txt
+          qemu-system-x86_64 --version | head -n1 | tee -a host-packages.txt
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xtile-initramfs
+          path: xi
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlin-kernel-build
+          path: k/pinned
+          run-id: ${{ inputs.xlin_build_run_id || '45369210790' }}
+          github-token: ${{ github.token }}
+      - name: Runner CPUID, then guests (same job, same QEMU)
+        run: |
+          set -u
+          mkdir -p out; chmod +x xi/xtile-probe
+          { grep -m1 'model name' /proc/cpuinfo; xi/xtile-probe all; xi/xtile-probe kvm; } >out/runner-probe.txt 2>&1 || true
+          grep -m1 'model name' /proc/cpuinfo
+          for l in 'XTILE: vendor=' 'CPUID leaf=0x7 sub=0 ' 'CPUID leaf=0xd sub=0 ' 'decoded leaf0x1d'; do grep -m1 "$l" out/runner-probe.txt; done
+          export OVMF_CODE=/usr/share/edk2/x64/OVMF_CODE.4m.fd OVMF_VARS=/usr/share/edk2/x64/OVMF_VARS.4m.fd
+          [ -c /dev/kvm ] && A=kvm || A=tcg
+          arch=/usr/lib/modules/$(ls /usr/lib/modules | grep -- -lts | head -n1)/vmlinuz
+          pinned=$(find k/pinned -name bzImage | head -n1)
+          i=xi/xtile-initramfs.cpio.zst
+          b=tests/research/xtile/boot.sh
+          bash $b out/guests arch-lts-host   "$arch"   $i $A host 3
+          bash $b out/guests pinned-host     "$pinned" $i $A host 3
+          if [ "$A" = kvm ]; then
+            bash $b out/guests arch-lts-host-level1c "$arch"   $i kvm 'host,level=0x1c' 2
+            bash $b out/guests pinned-host-level1c   "$pinned" $i kvm 'host,level=0x1c' 3
+            bash $b out/guests pinned-host-level1d   "$pinned" $i kvm 'host,level=0x1d' 2
+            bash $b out/guests pinned-host-level1c-noamxtile "$pinned" $i kvm 'host,level=0x1c,-amx-tile' 2
+          fi
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Arch container: $(cat host-packages.txt | tr '\n' ' ')"
+            echo '```'
+            for l in 'model name' 'XTILE: vendor=' 'CPUID leaf=0x7 sub=0 ' 'CPUID leaf=0xd sub=0 ' 'decoded leaf0x1d'; do grep -m1 "$l" out/runner-probe.txt; done
+            echo '```'
+            python3 -I tests/research/xtile/summarize.py out/guests
+          } | tee out/summary.md | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xtile-research-arch-${{ matrix.n }}
+          path: |
+            out/*.md
+            out/*.txt
+            host-packages.txt
             out/guests/*/serial.log
             out/guests/*/qemu-command.txt
             out/guests/*/meta.txt
