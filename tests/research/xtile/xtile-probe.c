@@ -108,6 +108,42 @@ __attribute__((target("amx-tile"), noinline)) static void tile_use(unsigned char
 	_tile_release();
 }
 
+/* int8 tile matrix multiply: C(16x16 int32) = A(16x64 int8, all 1) x B(16x64 int8, all 1); every C element must be 64 */
+__attribute__((target("amx-tile,amx-int8"), noinline)) static void tile_matmul(int32_t *c_out)
+{
+	static unsigned char a[1024] __attribute__((aligned(64))), b[1024] __attribute__((aligned(64)));
+	struct tilecfg cfg;
+	memset(a, 1, sizeof(a)); memset(b, 1, sizeof(b));
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.palette = 1;
+	for (int i = 0; i < 3; i++) { cfg.colsb[i] = 64; cfg.rows[i] = 16; }
+	_tile_loadconfig(&cfg);
+	_tile_zero(0);
+	_tile_loadd(1, a, 64);
+	_tile_loadd(2, b, 64);
+	_tile_dpbssd(0, 1, 2);
+	_tile_stored(0, c_out, 64);
+	_tile_release();
+}
+
+static const char *try_matmul(int *ok)
+{
+	static int32_t c[256] __attribute__((aligned(64)));
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = on_sig;
+	sigaction(SIGILL, &sa, NULL); sigaction(SIGSEGV, &sa, NULL);
+	memset(c, 0xAA, sizeof(c));
+	got = 0; *ok = 0;
+	if (sigsetjmp(jb, 1) == 0) {
+		tile_matmul(c);
+		for (int i = 0; i < 256; i++) if (c[i] != 64) return "executed but a result element is not 64";
+		*ok = 1;
+		return "executed; TDPBSSD int8 16x16 result correct (all 256 elements = 64)";
+	}
+	return got == SIGILL ? "SIGILL" : "SIGSEGV";
+}
+
 static const char *try_tile(unsigned char *buf, int *ok)
 {
 	struct sigaction sa;
@@ -155,7 +191,9 @@ static void do_amx(void)
 	printf("XTILE: arch_prctl(ARCH_GET_XCOMP_PERM) ret=%ld permitted_mask=0x%lx\n", r, perm);
 	const char *res = try_tile(buf, &ok);
 	printf("XTILE: amx test after permission: %s\n", res);
-	printf("XTILE: AMX_RESULT %s\n", ok ? "WORKS" : "DOES-NOT-WORK");
+	int ok2 = 0;
+	if (ok) printf("XTILE: amx matmul test: %s\n", try_matmul(&ok2));
+	printf("XTILE: AMX_RESULT %s\n", ok && ok2 ? "WORKS" : "DOES-NOT-WORK");
 }
 
 static int do_kvm(void)
