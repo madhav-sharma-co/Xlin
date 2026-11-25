@@ -13,6 +13,11 @@
 name: XTILE-CPUID research
 
 on:
+  # workflow_dispatch only works once the file is on the default branch; this branch-scoped push trigger lets the
+  # research run from research/xtile-cpuid without touching main or PR #5 (path-filtered: other pushes do nothing).
+  push:
+    branches: [research/xtile-cpuid]
+    paths: ['.github/workflows/xtile-research.yml']
   workflow_dispatch:
     inputs:
       xlin_build_run_id:
