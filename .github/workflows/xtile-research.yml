@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        n: [1, 2, 3, 4, 5, 6]
+        n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -122,12 +122,33 @@ jobs:
             bash tests/research/xtile/boot.sh out/guests "pinned-host-noamxtile" "$kernel" out/xtile-initramfs.cpio.zst kvm 'host,-amx-tile' 2
             bash tests/research/xtile/boot.sh out/guests "pinned-SapphireRapids" "$kernel" out/xtile-initramfs.cpio.zst kvm SapphireRapids 3
           fi
+          if [ "$A" = kvm ]; then
+            # controlled variants of the guest's CPUID max basic leaf (QEMU property "level"): is the check
+            # driven by the guest CPUID level being below the AMX tile leaf 0x1d?
+            bash tests/research/xtile/boot.sh out/guests "pinned-host-level1c" "$kernel" out/xtile-initramfs.cpio.zst kvm 'host,level=0x1c' 3
+            bash tests/research/xtile/boot.sh out/guests "pinned-host-level1d" "$kernel" out/xtile-initramfs.cpio.zst kvm 'host,level=0x1d' 2
+            bash tests/research/xtile/boot.sh out/guests "pinned-host-level1c-noamxtile" "$kernel" out/xtile-initramfs.cpio.zst kvm 'host,level=0x1c,-amx-tile' 2
+            for k in stable mainline; do
+              kk=$(find k/$k -name bzImage | head -n1)
+              bash tests/research/xtile/boot.sh out/guests "$k-host-level1c" "$kk" out/xtile-initramfs.cpio.zst kvm 'host,level=0x1c' 2
+            done
+          fi
           bash tests/research/xtile/boot.sh out/guests "pinned-tcg-max" "$kernel" out/xtile-initramfs.cpio.zst tcg max 2
 
       - name: Summary
         if: always()
         run: |
           {
+            echo "### Runner CPUID as seen natively (the level the guests inherit under -cpu host)"
+            echo '```'
+            grep -m1 -E 'XTILE: vendor=' out/runner-probe.txt
+            grep -m1 -E 'CPUID leaf=0x7 sub=0 ' out/runner-probe.txt
+            grep -m1 -E 'CPUID leaf=0xd sub=0 ' out/runner-probe.txt
+            grep -m1 -E 'decoded leaf0x1d' out/runner-probe.txt
+            grep -m1 -E 'kvm supported function=0x0 ' out/runner-probe.txt
+            grep -m1 -E 'kvm supported function=0x1d ' out/runner-probe.txt || echo "kvm supported function=0x1d: not offered by this host's KVM"
+            echo '```'
+            echo
             echo "### Guest boots (values are quoted from each serial log; nothing is judged here)"
             echo
             python3 -I tests/research/xtile/summarize.py out/guests

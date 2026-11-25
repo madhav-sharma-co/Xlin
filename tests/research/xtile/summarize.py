@@ -21,13 +21,14 @@ for d in sorted(pathlib.Path(sys.argv[1]).glob("*/")):
         cpu=val(meta, r"cpu=(\S+)"), accel=val(meta, r"accel=(\S+)"),
         model=val(t, r"XTILE-GUEST: model name\s*:\s*(.*)"),
         check="FIRED" if re.search(r"XFEATURE_XTILE_DATA: (calculated size|struct is)", t) else "not fired",
+        maxleaf=val(t, r"XTILE: vendor=\S+ max_basic_leaf=(\S+)"),
         c7=val(t, r"decoded cpuid7 (amx_bf16=\d+ amx_tile=\d+ amx_int8=\d+)"),
         xcr0bits=val(t, r"decoded leaf0xd.0 supported_xcr0=\S+ (tile_cfg\(bit17\)=\d tile_data\(bit18\)=\d)"),
         l1d=val(t, r"decoded leaf0x1d (max_palette=\d+ palette1 total_tile_bytes=\d+)|decoded leaf0x1d (NOT REACHABLE.*)"),
         amx=val(t, r"AMX_RESULT (\S+)"),
         amxnote=val(t, r"amx test after permission: (.*)|XTILE: (amx test cpuid7.edx amx_tile=0)"),
     ))
-print("| boot | accel | -cpu | guest CPU | cpuid7 amx bits | leaf 0xd bits 17/18 | leaf 0x1d | kernel check | AMX test |")
-print("|---|---|---|---|---|---|---|---|---|")
+print("| boot | accel | -cpu | guest CPU | max leaf | cpuid7 amx bits | leaf 0xd bits 17/18 | leaf 0x1d | kernel check | AMX test |")
+print("|---|---|---|---|---|---|---|---|---|---|")
 for r in rows:
-    print(f"| {r['boot']} | {r['accel']} | `{r['cpu']}` | {r['model']} | {r['c7']} | {r['xcr0bits']} | {r['l1d']} | {r['check']} | {r['amx']} ({r['amxnote'][:60]}) |")
+    print(f"| {r['boot']} | {r['accel']} | `{r['cpu']}` | {r['model']} | {r['maxleaf']} | {r['c7']} | {r['xcr0bits']} | {r['l1d']} | {r['check']} | {r['amx']} ({r['amxnote'][:60]}) |")
