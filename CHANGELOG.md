@@ -11,6 +11,7 @@ All notable changes to Xlin are recorded here. The format follows [Keep a Change
 
 ### Added
 
+- Known finding W-X-CPA-ITS reclassified EXPLAINED-UPSTREAM (upstream commit ea6fd393cb9e); still reported as a finding, evidence and limitations kept, no upstream report sent; XTILE-CPUID stays EXPLAINED-OPEN.
 - Expanded runtime validation (Phase B Step 6): probe table mapped to kernel options, guest suites, host runner with boot matrix, repeats and flake rate, device/filesystem/module (kmod) scenarios, kernel-log allowlist and known-findings tiers (an open W^X finding stays visible, never a clean pass), informational measurements, optional non-gating Arch `linux-lts` baseline. QEMU only; see `docs/RUNTIME-VALIDATION.md`.- Xlin Source Pin: `upstream/UPSTREAM.lock` pins Linux 6.18.64 (commit `fd7cfd39c88596fec816639ad83cbf3e9d316372`, signed tag `v6.18.64`).
 - Xlin Fetch (`scripts/xlin-fetch`): retrieves exactly the pinned source into an ignored directory.
 - Xlin Verify (`scripts/xlin-verify`): reports source identity and, separately, authenticated provenance.

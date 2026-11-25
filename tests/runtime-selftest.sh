@@ -96,11 +96,11 @@ run 1 "the wrong kernel release fails" --scenarios base
 good_log config hardening systemd measure logscan | sed 's/^XLIN-TEST: systemd something PASS fine$/XLIN-TEST: systemd something SKIP reason given/' >"$FAKE_LOG"
 run 0 "an explained SKIP (not tested) is allowed and is not counted as a pass" --scenarios base
 
-good_log config hardening systemd measure logscan | sed 's/^XLIN-TEST: logscan something PASS fine/&\nXLIN-TEST: logscan finding-W-X-CPA-ITS FINDING [EXPLAINED-OPEN] [    0.449975] CPA detected W^X violation/' >"$FAKE_LOG"
+good_log config hardening systemd measure logscan | sed 's/^XLIN-TEST: logscan something PASS fine/&\nXLIN-TEST: logscan finding-W-X-CPA-ITS FINDING [EXPLAINED-UPSTREAM] [    0.449975] CPA detected W^X violation/' >"$FAKE_LOG"
 run 0 "an open finding does not fail the run by itself" --scenarios base
 if grep -q 'RESULT: PASS WITH OPEN FINDINGS' "$T/last.txt" && ! grep -q '^RESULT: PASS (' "$T/last.txt"; then ok "the run is reported as PASS WITH OPEN FINDINGS, not as a clean PASS"; else bad "finding run reported as clean"; fi
 if grep -q 'Verdict: PASS WITH OPEN FINDINGS' "$T/out/summary.md" && grep -q 'NOT a clean pass' "$T/out/summary.md"; then ok "the summary verdict says it is not a clean pass"; else bad "summary verdict does not flag the finding"; fi
-if grep -A4 'Open findings' "$T/out/summary.md" | grep -q 'W-X-CPA-ITS.*EXPLAINED-OPEN.*1 of 1 boots whose kernel log was scanned'; then ok "the finding is listed in the summary with its status and boot count"; else bad "finding missing from the summary"; fi
+if grep -A4 'Open findings' "$T/out/summary.md" | grep -q 'W-X-CPA-ITS.*EXPLAINED-UPSTREAM.*1 of 1 boots whose kernel log was scanned'; then ok "the finding is listed in the summary with its status and boot count"; else bad "finding missing from the summary"; fi
 run 4 "--strict-findings turns an open finding into a non-zero exit" --scenarios base --strict-findings
 
 good_log config hardening systemd measure logscan | sed 's/^XLIN-TEST: hardening something PASS fine/XLIN-TEST: hardening kaslr SKIP COLLISION _text=ffffffff81000000 equals the link-time address/' >"$FAKE_LOG"
@@ -150,7 +150,7 @@ scan_expect "an allowlisted notice is INFO allowed" 'logscan allowed INFO'
 scan_expect "an allowlisted notice does not fail the scan" 'kernel-log-no-unexpected PASS'
 scan_refuse "an allowlisted notice is not a finding" ' FINDING '
 printf '<4>[    0.2] CPA detected W^X violation: 8000000000000123 -> 0000000000000123 range: 0xffffffffc0400000 - 0xffffffffc0400fff PFN 2000\n' >"$S/log"
-scan_expect "the W^X line is a FINDING with its ID and status" 'logscan finding-W-X-CPA-ITS FINDING \[EXPLAINED-OPEN\]'
+scan_expect "the W^X line is a FINDING with its ID and status" 'logscan finding-W-X-CPA-ITS FINDING \[EXPLAINED-UPSTREAM\]'
 scan_refuse "the W^X line is not allowlisted" 'logscan allowed'
 scan_refuse "the W^X line is not an unexpected failure" 'logscan unexpected FAIL'
 printf '<3>[    0.2] XFEATURE_XTILE_DATA: calculated size is 0 bytes, cpu state 8192 bytes\n<3>[    0.3] CPUID[0d, 00]: eax=000600e7 ebx=00002b00 ecx=00002b00 edx=00000000\n<3>[    0.4] CPUID[0d, 01]: eax=0000001f ebx=000029c0 ecx=00000000 edx=00000000\n' >"$S/log"
