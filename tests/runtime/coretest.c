@@ -240,26 +240,40 @@ static int timer(void)
 	if (tf >= 0) close(tf);
 
 	/* interval timer signal */
-	struct sigaction sa;
+	struct sigaction sa, old_sa;
 	memset(&sa, 0, sizeof sa);
 	sa.sa_handler = alrm_h;
-	sigaction(SIGALRM, &sa, NULL);
+	int sa_ok = sigaction(SIGALRM, &sa, &old_sa) == 0;
 	struct itimerval iv = {{0, 20000}, {0, 20000}};
-	setitimer(ITIMER_REAL, &iv, NULL);
-	clock_gettime(CLOCK_MONOTONIC, &t0);
-	while (alrm_count < 10 && ms_since(&t0) < 2000) pause();
+	int itimer_ok = sa_ok && setitimer(ITIMER_REAL, &iv, NULL) == 0;
+	int interval_clock_ok = clock_gettime(CLOCK_MONOTONIC, &t0) == 0;
+	while (itimer_ok && interval_clock_ok && alrm_count < 10) {
+		long long elapsed = ms_since(&t0);
+		if (elapsed < 0 || elapsed >= 2000) break;
+		pause();
+	}
 	struct itimerval off = {{0, 0}, {0, 0}};
-	setitimer(ITIMER_REAL, &off, NULL);
-	CHECK("setitimer-sigalrm", alrm_count >= 10, "%d SIGALRM in %lld ms from a 20 ms interval timer", (int)alrm_count, ms_since(&t0));
+	int timer_stop_ok = setitimer(ITIMER_REAL, &off, NULL) == 0;
+	long long interval_elapsed = interval_clock_ok ? ms_since(&t0) : -1;
+	CHECK("setitimer-sigalrm", sa_ok && itimer_ok && interval_clock_ok && timer_stop_ok && alrm_count >= 10,
+	      "%d SIGALRM in %lld ms from a 20 ms interval timer (setup_ok=%d stop_ok=%d)",
+	      (int)alrm_count, interval_elapsed, itimer_ok, timer_stop_ok);
+	if (sa_ok) sigaction(SIGALRM, &old_sa, NULL);
 
 	/* wall clock vs monotonic advance together */
-	struct timespec r1, r2, m1, m2;
-	clock_gettime(CLOCK_REALTIME, &r1); clock_gettime(CLOCK_MONOTONIC, &m1);
-	usleep(200000);
-	clock_gettime(CLOCK_REALTIME, &r2); clock_gettime(CLOCK_MONOTONIC, &m2);
-	long long dr = (r2.tv_sec - r1.tv_sec) * 1000 + (r2.tv_nsec - r1.tv_nsec) / 1000000;
-	long long dm = (m2.tv_sec - m1.tv_sec) * 1000 + (m2.tv_nsec - m1.tv_nsec) / 1000000;
-	CHECK("realtime-vs-monotonic", dr - dm > -20 && dr - dm < 20, "over 200 ms REALTIME advanced %lld ms, MONOTONIC %lld ms", dr, dm);
+	struct timespec r1, r2, m1, m2, delay = {0, 200000000L}, rem;
+	int clocks_ok = clock_gettime(CLOCK_REALTIME, &r1) == 0 && clock_gettime(CLOCK_MONOTONIC, &m1) == 0;
+	int delay_ok = clocks_ok;
+	while (delay_ok && nanosleep(&delay, &rem) != 0) {
+		if (errno != EINTR) { delay_ok = 0; break; }
+		delay = rem;
+	}
+	clocks_ok = clocks_ok && clock_gettime(CLOCK_REALTIME, &r2) == 0 && clock_gettime(CLOCK_MONOTONIC, &m2) == 0;
+	long long dr = clocks_ok ? (r2.tv_sec - r1.tv_sec) * 1000 + (r2.tv_nsec - r1.tv_nsec) / 1000000 : -1;
+	long long dm = clocks_ok ? (m2.tv_sec - m1.tv_sec) * 1000 + (m2.tv_nsec - m1.tv_nsec) / 1000000 : -1;
+	CHECK("realtime-vs-monotonic", clocks_ok && delay_ok && dr - dm > -20 && dr - dm < 20,
+	      "over 200 ms REALTIME advanced %lld ms, MONOTONIC %lld ms (syscalls_ok=%d)",
+	      dr, dm, clocks_ok && delay_ok);
 	return 0;
 }
 static int affinity(void)
