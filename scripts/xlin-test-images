@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Xlin Test Images: build the small disk images used by the runtime validation (Step 6).
+#
+# Every image is a whole-device filesystem (no partition table) holding XLIN-DISK-ID and, for
+# the filesystem images, XLIN-FS-TEST. No root privileges are used: images are populated by
+# the mkfs tools themselves (mke2fs -d, mksquashfs, mkfs.btrfs --rootdir, mkfs.xfs -p,
+# genisoimage, mcopy, ntfscp). A filesystem whose image cannot be built is recorded in
+# images.txt as "not-built <name> <reason>"; the runtime test then reports it as NOT TESTED
+# instead of skipping it silently.
+#
+# The images are build artifacts and are never committed. The tools are installed on the CI
+# runner from its distribution; none of their files are copied into this repository.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/xlin-lock.sh
+. "$ROOT/scripts/lib/xlin-lock.sh"
+
+usage() {
+	cat <<'USAGE'
+Usage: scripts/xlin-test-images --out DIR [--modules-tar FILE] [--modules-dir DIR]
+
+  --out DIR          output directory (created)
+  --modules-tar FILE modules-<release>.tar.zst written by scripts/xlin-build
+  --modules-dir DIR  an unpacked lib/modules/<release> directory instead of the tarball
+
+Writes ext4.img, modules.img (if modules are given), fs-<type>.img and images.txt.
+USAGE
+}
+
+out="" mtar="" mdir=""
+while [ $# -gt 0 ]; do
+	case $1 in
+	--out) out=${2:?}; shift 2 ;;
+	--modules-tar) mtar=${2:?}; shift 2 ;;
+	--modules-dir) mdir=${2:?}; shift 2 ;;
+	-h | --help) usage; exit 0 ;;
+	*) usage >&2; xlin_die "unknown option: $1" ;;
+	esac
+done
+[ -n "$out" ] || { usage >&2; xlin_die "--out is required"; }
+command -v mke2fs >/dev/null || { echo "error: mke2fs (e2fsprogs) is required" >&2; exit 3; }
+mkdir -p "$out"
+: >"$out/images.txt"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+note() { echo "$*" | tee -a "$out/images.txt"; }
+want() { # TOOL -> 0 if present
+	command -v "$1" >/dev/null 2>&1
+}
+content() { # DIR ID TYPE
+	mkdir -p "$1"
+	printf '%s' "$2" >"$1/XLIN-DISK-ID"
+	printf '%s' "$3" >"$1/XLIN-FS-TEST"
+	printf 'xlin-disk-ok' >"$1/XLIN-TESTFILE"
+}
+try_build() { # NAME COMMAND... ; records the result and removes a failed image
+	local name=$1
+	shift
+	if "$@" >"$work/$name.log" 2>&1 && [ -s "$out/$name.img" ]; then
+		note "built $name $(stat -c %s "$out/$name.img")"
+	else
+		rm -f "$out/$name.img"
+		note "not-built $name $(tr '\n' ' ' <"$work/$name.log" | cut -c1-200)"
+	fi
+}
+
+# ---- plain ext4 disk, used for every bus/device test -------------------------------------
+content "$work/ext4" xlin-ext4 xlin-fs-ok-ext4
+mke2fs -q -t ext4 -F -d "$work/ext4" "$out/ext4.img" 48M
+note "built ext4 $(stat -c %s "$out/ext4.img")"
+# the same filesystem with other ids, for tests that need several disks
+for id in a b; do
+	content "$work/ext4$id" "xlin-ext4-$id" xlin-fs-ok-ext4
+	mke2fs -q -t ext4 -F -d "$work/ext4$id" "$out/ext4-$id.img" 16M
+done
+
+# scratch disk for the reboot-cycle scenario (the guest stores a counter in sector 0)
+truncate -s 8M "$out/scratch.img"
+note "built scratch 8388608"
+
+# ---- modules image ------------------------------------------------------------------------
+if [ -n "$mtar" ] || [ -n "$mdir" ]; then
+	if [ -n "$mtar" ]; then
+		command -v zstd >/dev/null || { echo "error: zstd is required for --modules-tar" >&2; exit 3; }
+		mkdir -p "$work/mt"
+		zstd -dc "$mtar" | tar -x -C "$work/mt"
+		mdir=$(find "$work/mt" -mindepth 3 -maxdepth 4 -type d -path '*lib/modules/*' | head -n1)
+	fi
+	if [ -z "$mdir" ] || [ ! -f "$mdir/modules.dep" ]; then
+		echo "error: no modules.dep in the modules (looked in ${mdir:-none})" >&2
+		exit 1
+	fi
+	# the image root IS lib/modules/<release>, plus a few test modules made from a real one
+	rm -rf "$work/mod"
+	mkdir -p "$work/mod"
+	cp -a "$mdir"/. "$work/mod"/
+	rm -f "$work/mod/build" "$work/mod/source"
+	printf '%s' xlin-modules >"$work/mod/XLIN-DISK-ID"
+	mkdir -p "$work/mod/xlin-tests"
+	python3 -I - "$work/mod" <<'PY'
+import os, sys, subprocess
+root = sys.argv[1]
+MARK = b"~Module signature appended~\n"
+# smallest signed module without dependencies
+cands = []
+for line in open(os.path.join(root, "modules.dep")):
+    path, _, deps = line.rstrip("\n").partition(":")
+    if deps.strip() == "" and path.endswith((".ko", ".ko.zst", ".ko.xz", ".ko.gz")):
+        full = os.path.join(root, path)
+        if os.path.isfile(full):
+            cands.append((os.path.getsize(full), full))
+cands.sort()
+if not cands:
+    print("no dependency-free module found; tampered/unsigned test modules not made")
+    sys.exit(0)
+size, path = cands[0]
+if path.endswith(".zst"):
+    data = subprocess.run(["zstd", "-dc", path], capture_output=True, check=True).stdout
+elif path.endswith(".xz"):
+    data = subprocess.run(["xz", "-dc", path], capture_output=True, check=True).stdout
+elif path.endswith(".gz"):
+    data = subprocess.run(["gzip", "-dc", path], capture_output=True, check=True).stdout
+else:
+    data = open(path, "rb").read()
+if not data.endswith(MARK):
+    print("the chosen module is not signed; tampered/unsigned test modules not made")
+    sys.exit(0)
+tail = data[: -len(MARK)]
+sig_len = int.from_bytes(tail[-4:], "big")
+signer_len, key_id_len = tail[-9], tail[-8]
+total = sig_len + signer_len + key_id_len + 12
+unsigned = tail[:-total]
+name = os.path.basename(path).split(".ko")[0]
+t = bytearray(data)
+t[len(unsigned) // 2] ^= 0xFF   # corrupt the signed body; the appended signature no longer matches
+d = os.path.join(root, "xlin-tests")
+open(os.path.join(d, "tampered.ko"), "wb").write(bytes(t))
+open(os.path.join(d, "unsigned.ko"), "wb").write(unsigned)
+print(f"test modules made from {name} ({len(unsigned)} bytes unsigned)")
+PY
+	sz=$(du -sm "$work/mod" | cut -f1)
+	mke2fs -q -t ext4 -F -d "$work/mod" "$out/modules.img" "$((sz * 12 / 10 + 24))M"
+	note "built modules $(stat -c %s "$out/modules.img")"
+else
+	note "not-built modules no --modules-tar/--modules-dir given"
+fi
+
+# ---- filesystem images ---------------------------------------------------------------------
+for t in ext4 vfat squashfs iso9660 udf btrfs xfs ntfs; do content "$work/fs-$t" "fs-$t" "xlin-fs-ok-$t"; done
+# ntfs is mounted with -t ntfs3 by the guest; its test file records the name "ntfs3"
+printf '%s' xlin-fs-ok-ntfs3 >"$work/fs-ntfs/XLIN-FS-TEST"
+
+build_ext4() { mke2fs -q -t ext4 -F -d "$work/fs-ext4" "$out/fs-ext4.img" 32M; }
+build_vfat() {
+	if ! want mkfs.vfat || ! want mcopy; then echo "needs dosfstools and mtools"; return 1; fi
+	rm -f "$out/fs-vfat.img"
+	mkfs.vfat -C "$out/fs-vfat.img" 16384 >/dev/null
+	mcopy -i "$out/fs-vfat.img" "$work"/fs-vfat/XLIN-DISK-ID "$work"/fs-vfat/XLIN-FS-TEST ::
+}
+build_squashfs() { want mksquashfs || { echo "needs squashfs-tools"; return 1; }; mksquashfs "$work/fs-squashfs" "$out/fs-squashfs.img" -noappend -quiet; }
+build_iso() { # TYPE EXTRA...
+	local t=$1
+	shift
+	local tool=""
+	want genisoimage && tool=genisoimage
+	[ -n "$tool" ] || { want xorrisofs && tool=xorrisofs; }
+	[ -n "$tool" ] || { echo "needs genisoimage or xorriso"; return 1; }
+	"$tool" -quiet -R -o "$out/fs-$t.img" "$@" "$work/fs-$t"
+}
+build_btrfs() { want mkfs.btrfs || { echo "needs btrfs-progs"; return 1; }; rm -f "$out/fs-btrfs.img"; truncate -s 256M "$out/fs-btrfs.img"; mkfs.btrfs -q -f --rootdir "$work/fs-btrfs" "$out/fs-btrfs.img"; }
+build_xfs() {
+	want mkfs.xfs || { echo "needs xfsprogs"; return 1; }
+	rm -f "$out/fs-xfs.img"
+	truncate -s 300M "$out/fs-xfs.img"
+	cat >"$work/xfs.proto" <<PROTO
+/dev/null
+0 0
+d--755 0 0
+XLIN-DISK-ID ---644 0 0 $work/fs-xfs/XLIN-DISK-ID
+XLIN-FS-TEST ---644 0 0 $work/fs-xfs/XLIN-FS-TEST
+\$
+PROTO
+	mkfs.xfs -q -f -p "$work/xfs.proto" "$out/fs-xfs.img"
+}
+build_ntfs() {
+	if ! want mkntfs || ! want ntfscp; then echo "needs ntfs-3g"; return 1; fi
+	rm -f "$out/fs-ntfs.img"
+	truncate -s 64M "$out/fs-ntfs.img"
+	mkntfs -q -F -f "$out/fs-ntfs.img" >/dev/null
+	ntfscp -f "$out/fs-ntfs.img" "$work/fs-ntfs/XLIN-DISK-ID" XLIN-DISK-ID
+	ntfscp -f "$out/fs-ntfs.img" "$work/fs-ntfs/XLIN-FS-TEST" XLIN-FS-TEST
+}
+try_build fs-ext4 build_ext4
+try_build fs-vfat build_vfat
+try_build fs-squashfs build_squashfs
+try_build fs-iso9660 build_iso iso9660
+try_build fs-udf build_iso udf -udf
+try_build fs-btrfs build_btrfs
+try_build fs-xfs build_xfs
+try_build fs-ntfs build_ntfs
+# exFAT: mkfs.exfat cannot populate an image without mounting it (needs root): not built
+note "not-built fs-exfat no unprivileged tool can put files into an exFAT image (mounting needs root)"
+{
+	for t in mke2fs mkfs.vfat mcopy mksquashfs genisoimage xorrisofs mkfs.btrfs mkfs.xfs mkntfs; do
+		if want "$t"; then echo "tool $t $( { "$t" --version 2>&1 || "$t" -V 2>&1; } | head -n1 || true)"; fi
+	done
+} >>"$out/images.txt" 2>/dev/null || true
+echo "Images in $out:"
+cat "$out/images.txt"

@@ -11,12 +11,18 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: "Debugging only: reuse the build artifact of this earlier run instead of rebuilding (the runtime-test job then runs; build and boot-test are skipped)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: ${{ inputs.build_run_id == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -187,3 +193,380 @@ jobs:
             build/boot-test/initramfs.cpio.zst.manifest
           if-no-files-found: warn
           retention-days: 14
+
+  runtime-test:
+    # Step 6: expanded runtime validation (boot matrix, /proc/config.gz identity, hardening and
+    # systemd probes, devices, filesystems, modules with kmod, kernel-log scan, reliability,
+    # informational measurements). QEMU + OVMF only: this does NOT test Xlin Boot, physical
+    # hardware or production readiness.
+    needs: build
+    if: ${{ always() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out Xlin
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install QEMU, OVMF, BusyBox, kmod and the image tools (from the distribution; nothing is committed)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf busybox-static zstd file kmod \
+            e2fsprogs dosfstools mtools squashfs-tools genisoimage btrfs-progs xfsprogs ntfs-3g
+          {
+            echo "### Tools used by the runtime test (installed on the runner, not committed)"
+            echo '```'
+            dpkg-query -W -f '${Package} ${Version}\n' qemu-system-x86 ovmf busybox-static kmod libkmod2 e2fsprogs dosfstools mtools squashfs-tools genisoimage btrfs-progs xfsprogs ntfs-3g
+            echo '```'
+            echo "kmod licence (from /usr/share/doc/kmod/copyright):"
+            echo '```'
+            grep -E '^(License|Files):' /usr/share/doc/kmod/copyright | head -n 12 || true
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          ls -l /dev/kvm || echo "no /dev/kvm: runs will use software emulation (TCG)"
+
+      - name: Allow QEMU to use KVM when the runner has it
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+
+      - name: Static checks (syntax, shellcheck, guest scripts)
+        run: |
+          set -eu
+          host="scripts/xlin-test-images scripts/xlin-initramfs tests/runtime-selftest.sh"
+          for f in $host; do bash -n "$f"; done
+          # shellcheck disable=SC2086
+          shellcheck -x $host
+          python3 -m py_compile scripts/xlin-runtime-test scripts/xlin-probe-map scripts/xlin-runtime-compare scripts/xlin-wx-compare
+          for f in tests/runtime/init tests/runtime/lib.sh tests/runtime/probes.sh tests/runtime/reboot-cycle tests/runtime/udhcpc.script tests/runtime/suites/*.sh; do sh -n "$f"; done
+
+      - name: Xlin Fetch and Xlin Verify (pinned source, needed for gen_init_cpio and Kconfig)
+        run: |
+          ./scripts/xlin-fetch
+          ./scripts/xlin-verify --strict
+
+      - name: Download the kernel built by the build job
+        uses: actions/download-artifact@v4
+        with:
+          name: xlin-kernel-build
+          path: artifact
+          run-id: ${{ inputs.build_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: The kernel under test is the one the build job reported
+        run: |
+          set -eu
+          want=$(sed -n 's/^bzimage_sha256=//p' artifact/report/build-report.env)
+          got=$(sha256sum artifact/report/bzImage | cut -d' ' -f1)
+          [ -n "$want" ] && [ "$want" = "$got" ]
+          ls -l artifact/report/
+
+      - name: Probe map (every probe against the build's real final .config)
+        run: |
+          set -o pipefail
+          python3 scripts/xlin-probe-map --src upstream/src/linux --config artifact/report/config-final \
+            --allow-unsupported --out probe-map.md | tee probe-map.txt
+          { echo "### Probe-to-option map"; cat probe-map.md; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Runtime-tool self-test (simulated guest, not a boot)
+        run: ./tests/runtime-selftest.sh
+
+      - name: Build the runtime initramfs (with the runner's kmod) and the test disk images
+        run: |
+          set -eu
+          ./scripts/xlin-initramfs --runtime --kmod /usr/bin/kmod --out build/runtime-test/initramfs.cpio.zst
+          cat build/runtime-test/initramfs.cpio.zst.manifest
+          ./scripts/xlin-test-images --out build/runtime-test/images --modules-tar artifact/report/modules-*.tar.zst
+
+      - name: Runtime validation, all scenarios (one boot each)
+        run: |
+          set -o pipefail
+          ./scripts/xlin-runtime-test --kernel artifact/report/bzImage --initramfs build/runtime-test/initramfs.cpio.zst \
+            --images build/runtime-test/images --config artifact/report/config-final \
+            --scenarios all --repeat 1 --out build/runtime-test/run-all 2>&1 | tee runtime-all.log
+
+      - name: Runtime validation, boot matrix (vCPUs x memory, 3 boots each, flake rate)
+        if: ${{ !cancelled() && hashFiles('build/runtime-test/initramfs.cpio.zst') != '' }}
+        run: |
+          set -o pipefail
+          ./scripts/xlin-runtime-test --kernel artifact/report/bzImage --initramfs build/runtime-test/initramfs.cpio.zst \
+            --images build/runtime-test/images --config artifact/report/config-final \
+            --scenarios base --matrix auto --repeat 3 --out build/runtime-test/run-matrix 2>&1 | tee runtime-matrix.log
+
+      - name: Runtime validation under software emulation (TCG), reduced matrix, 2 boots each
+        if: ${{ !cancelled() && hashFiles('build/runtime-test/initramfs.cpio.zst') != '' }}
+        run: |
+          set -o pipefail
+          ./scripts/xlin-runtime-test --kernel artifact/report/bzImage --initramfs build/runtime-test/initramfs.cpio.zst \
+            --images build/runtime-test/images --config artifact/report/config-final \
+            --scenarios base --accel tcg --matrix tcg --repeat 2 --out build/runtime-test/run-tcg 2>&1 | tee runtime-tcg.log
+
+      - name: Reports
+        if: always()
+        run: |
+          for d in run-all run-matrix run-tcg; do
+            if [ -f build/runtime-test/$d/summary.md ]; then
+              { echo "## $d"; cat build/runtime-test/$d/summary.md; } | tee -a "$GITHUB_STEP_SUMMARY" >/dev/null
+            fi
+          done
+          for d in build/runtime-test/run-all/*/ build/runtime-test/run-matrix/*/ build/runtime-test/run-tcg/*/; do
+            [ -f "$d/serial.log" ] || continue
+            echo "::group::serial.log $d"; cat "$d/serial.log"; echo "::endgroup::"
+          done
+          # known unresolved findings are never silent: one annotation per finding and run log
+          for f in runtime-all.log runtime-matrix.log runtime-tcg.log; do
+            grep -h 'OPEN FINDING' "$f" 2>/dev/null | while IFS= read -r l; do
+              echo "::warning title=Open kernel finding (not a clean pass)::$f: ${l#  }"
+            done
+            grep -h '^RESULT:' "$f" 2>/dev/null | sed "s/^/$f -> /" | tee -a "$GITHUB_STEP_SUMMARY" || true
+          done
+          tail -n 60 runtime-all.log 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xlin-runtime-test
+          path: |
+            build/runtime-test/run-all/summary.md
+            build/runtime-test/run-all/results.json
+            build/runtime-test/run-matrix/summary.md
+            build/runtime-test/run-matrix/results.json
+            build/runtime-test/run-all/*/serial.log
+            build/runtime-test/run-all/*/qemu-command.txt
+            build/runtime-test/run-all/*/qemu-stderr.log
+            build/runtime-test/run-matrix/*/serial.log
+            build/runtime-test/run-tcg/summary.md
+            build/runtime-test/run-tcg/results.json
+            build/runtime-test/run-tcg/*/serial.log
+            build/runtime-test/initramfs.cpio.zst.manifest
+            build/runtime-test/images/images.txt
+            probe-map.md
+          if-no-files-found: warn
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xlin-runtime-initramfs
+          path: |
+            build/runtime-test/initramfs.cpio.zst
+            build/runtime-test/initramfs.cpio.zst.manifest
+          if-no-files-found: warn
+          retention-days: 3
+
+  arch-baseline:
+    # OPTIONAL, NON-GATING comparison: the same runtime guest on Arch's linux-lts kernel. The Arch
+    # kernel is a different version and configuration, built by Arch; this job only shows how
+    # the Xlin Kernel's runtime behaviour differs and never fails the workflow.
+    needs: [build, runtime-test]
+    if: ${{ always() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    continue-on-error: true
+    container:
+      image: archlinux:latest
+      options: --device /dev/kvm
+    steps:
+      - name: Install the Arch kernel, QEMU and OVMF
+        run: |
+          pacman -Syu --noconfirm --noprogressbar
+          pacman -S --noconfirm --noprogressbar --needed qemu-system-x86 edk2-ovmf linux-lts python git nodejs
+          ls /usr/lib/modules/
+          pacman -Q linux-lts qemu-system-x86 edk2-ovmf
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlin-runtime-initramfs
+          path: rt
+
+      - name: Boot the same runtime guest on Arch linux-lts
+        run: |
+          set -o pipefail
+          rel=$(ls /usr/lib/modules | grep -- -lts | head -n1)
+          echo "Arch kernel release: $rel"
+          kimg=/usr/lib/modules/$rel/vmlinuz
+          ls -l "$kimg"
+          # the release is Arch's, not Xlin's: the guest only compares it with what we pass
+          # the lock file is only read for the expected release; pass it explicitly instead
+          python3 scripts/xlin-runtime-test --kernel "$kimg" --initramfs rt/initramfs.cpio.zst \
+            --images /nonexistent --scenarios base,stress --repeat 3 --expect-release "$rel" \
+            --out build/arch/run 2>&1 | tee arch.log || true
+
+      - uses: actions/download-artifact@v4
+        if: always()
+        with:
+          name: xlin-kernel-build
+          path: artifact
+          run-id: ${{ inputs.build_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Control, the XLIN kernel under this container's QEMU (to separate kernel from QEMU/host effects)
+        if: always()
+        run: |
+          # Xlin's own runtime job uses the runner's QEMU (Ubuntu), this job uses Arch's newer QEMU. What
+          # a guest sees of the host CPU (and so which mitigations and early-boot messages appear)
+          # depends on the QEMU version as well as on the kernel. Booting the Xlin kernel here, with the
+          # same QEMU and on the same job host as the Arch kernel above, makes the comparison fair.
+          set -o pipefail
+          python3 scripts/xlin-runtime-test --kernel artifact/report/bzImage --initramfs rt/initramfs.cpio.zst \
+            --images /nonexistent --config artifact/report/config-final --scenarios base --repeat 3 \
+            --out build/arch/xlin-control 2>&1 | tee arch-control.log || true
+          for d in build/arch/xlin-control/*/; do [ -f "$d/serial.log" ] && { echo "::group::control serial.log $d"; cat "$d/serial.log"; echo "::endgroup::"; }; done
+          true
+
+      - name: Arch baseline report
+        if: always()
+        run: |
+          cat build/arch/run/summary.md 2>/dev/null || tail -n 40 arch.log
+          cat build/arch/xlin-control/summary.md 2>/dev/null || true
+          for d in build/arch/run/*/; do [ -f "$d/serial.log" ] && { echo "::group::serial.log $d"; cat "$d/serial.log"; echo "::endgroup::"; }; done
+          true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xlin-arch-baseline
+          path: |
+            build/arch/run/summary.md
+            build/arch/run/results.json
+            build/arch/xlin-control/summary.md
+            build/arch/xlin-control/results.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  arch-qemu8-control:
+    # OPTIONAL, NON-GATING controlled comparison for the open W^X finding: the Arch linux-lts kernel and the
+    # Xlin kernel booted ONE AFTER THE OTHER in the SAME job, on the same runner host, with the SAME
+    # QEMU (the runner's apt QEMU, as in the runtime-test job), OVMF, machine, CPU, memory, boot
+    # method, command line and initramfs. It only counts what the boot logs say; it never decides that
+    # the finding is harmless.
+    needs: [build, runtime-test]
+    if: ${{ always() && (needs.build.result == 'success' || needs.build.result == 'skipped') && needs.runtime-test.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install QEMU, OVMF and zstd
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf zstd
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+          {
+            echo "### Controlled Arch vs Xlin comparison: host and tools"
+            echo '```'
+            grep -m1 'model name' /proc/cpuinfo
+            grep -m1 'model' /proc/cpuinfo | head -n1 || true
+            nproc
+            dpkg-query -W -f '${Package} ${Version}\n' qemu-system-x86 ovmf
+            qemu-system-x86_64 --version | head -n1
+            uname -r
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Get the Arch linux-lts kernel image (only the vmlinuz is extracted; nothing is committed)
+        run: |
+          set -eu
+          mkdir -p archk
+          docker run --rm -v "$PWD/archk:/out" archlinux:latest sh -c '
+            pacman -Syu --noconfirm --noprogressbar >/dev/null &&
+            pacman -S --noconfirm --noprogressbar --needed linux-lts >/dev/null &&
+            rel=$(ls /usr/lib/modules | grep -- -lts | head -n1) &&
+            cp /usr/lib/modules/$rel/vmlinuz /out/vmlinuz && echo "$rel" >/out/release &&
+            pacman -Q linux-lts >/out/package'
+          ls -l archk; cat archk/release archk/package
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlin-kernel-build
+          path: artifact
+          run-id: ${{ inputs.build_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlin-runtime-initramfs
+          path: rt
+
+      - name: Boot both kernels, same QEMU, same host, same job
+        run: |
+          set -o pipefail
+          rel=$(cat archk/release)
+          # Arch first, then Xlin, then Arch and Xlin again, so host drift within the job is visible
+          for round in 1 2; do
+            python3 scripts/xlin-runtime-test --kernel archk/vmlinuz --initramfs rt/initramfs.cpio.zst \
+              --images /nonexistent --scenarios base --repeat 10 --expect-release "$rel" \
+              --out build/qemu8/arch-$round 2>&1 | tee -a control-arch.log || true
+            python3 scripts/xlin-runtime-test --kernel artifact/report/bzImage --initramfs rt/initramfs.cpio.zst \
+              --images /nonexistent --config artifact/report/config-final --scenarios base --repeat 10 \
+              --out build/qemu8/xlin-$round 2>&1 | tee -a control-xlin.log || true
+          done
+
+      - name: Count what the boot logs say (ITS, CPA W^X notice, DEBUG_WX)
+        if: always()
+        run: |
+          {
+            echo "### Arch linux-lts vs Xlin kernel, same job host and QEMU"
+            echo
+            python3 scripts/xlin-wx-compare arch=build/qemu8/arch-1 arch=build/qemu8/arch-2 xlin=build/qemu8/xlin-1 xlin=build/qemu8/xlin-2
+            echo
+            echo "Arch package: $(cat archk/package 2>/dev/null)"
+            echo "This counts log lines. It does not show that the CPA notice is harmless."
+          } | tee wx-compare.md | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -h '^RESULT:' control-arch.log control-xlin.log || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xlin-arch-qemu8-control
+          path: |
+            wx-compare.md
+            archk/release
+            archk/package
+            build/qemu8/*/summary.md
+            build/qemu8/*/results.json
+            build/qemu8/*/*/serial.log
+            build/qemu8/*/*/qemu-command.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  runtime-compare:
+    # Informational side-by-side of the Xlin Kernel and the Arch baseline. Never gates.
+    needs: [runtime-test, arch-baseline]
+    if: always() && needs.runtime-test.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlin-runtime-test
+          path: xlin
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlin-arch-baseline
+          path: arch
+      - name: Compare (informational)
+        run: |
+          set -eu
+          x=$(find xlin -name results.json -path '*run-all*' | head -n1)
+          a=$(find arch -name results.json | head -n1)
+          python3 scripts/xlin-runtime-compare "$x" "Xlin Kernel" "$a" "Arch linux-lts" | tee -a "$GITHUB_STEP_SUMMARY"

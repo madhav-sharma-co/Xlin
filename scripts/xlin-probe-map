@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Xlin Probe Map: check that every runtime probe is backed by the kernel configuration.
+
+Each row of tests/runtime/probes.tsv names the kernel options the probe depends on.
+This tool compares them with the real final .config of a build and reports, per probe:
+
+  SUPPORTED    every required option has the required value
+  UNSUPPORTED  an option is missing or has another value (the probe cannot be meaningful)
+
+It never changes the configuration. UNSUPPORTED probes are reported, not hidden, and the
+exit status is 1 if there are any (use --allow-unsupported to only report).
+
+Optionally (--src) it also checks that every named option exists as a symbol in the
+pinned source's Kconfig files, so a typo in the table is caught even without a build.
+"""
+import argparse
+import os
+import re
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_TABLE = os.path.join(ROOT, "tests", "runtime", "probes.tsv")
+
+
+def load_table(path):
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for n, line in enumerate(f, 1):
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            cols = line.split("\t")
+            if len(cols) != 6:
+                sys.exit(f"{path}:{n}: expected 6 TAB-separated columns, got {len(cols)}")
+            pid, kind, arg, expected, opts, desc = cols
+            options = []
+            if opts != "-":
+                for item in opts.split(","):
+                    if "=" not in item:
+                        sys.exit(f"{path}:{n}: bad option '{item}' (want SYMBOL=value)")
+                    sym, val = item.split("=", 1)
+                    options.append((sym, val))
+            rows.append(dict(id=pid, kind=kind, arg=arg, expected=expected,
+                             options=options, desc=desc, line=n))
+    ids = [r["id"] for r in rows]
+    dup = {i for i in ids if ids.count(i) > 1}
+    if dup:
+        sys.exit(f"duplicate probe ids: {sorted(dup)}")
+    return rows
+
+
+def load_config(path):
+    cfg = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r"CONFIG_([A-Za-z0-9_]+)=(.*)$", line.rstrip("\n"))
+            if m:
+                cfg[m.group(1)] = m.group(2).strip('"')
+    return cfg
+
+
+def kconfig_symbols(src):
+    syms = set()
+    pat = re.compile(r"^\s*(?:menu)?config\s+([A-Za-z0-9_]+)\s*$")
+    for dirpath, _, files in os.walk(src):
+        for name in files:
+            if name.startswith("Kconfig"):
+                try:
+                    with open(os.path.join(dirpath, name), encoding="utf-8", errors="replace") as f:
+                        for line in f:
+                            m = pat.match(line)
+                            if m:
+                                syms.add(m.group(1))
+                except OSError:
+                    pass
+    return syms
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--table", default=DEFAULT_TABLE)
+    ap.add_argument("--config", help="final kernel .config of a build")
+    ap.add_argument("--src", help="pinned kernel source, to check symbol names exist")
+    ap.add_argument("--out", help="write the mapping as a markdown table here")
+    ap.add_argument("--allow-unsupported", action="store_true")
+    a = ap.parse_args()
+    if not a.config and not a.src:
+        ap.error("give --config and/or --src")
+
+    rows = load_table(a.table)
+    cfg = load_config(a.config) if a.config else None
+    syms = kconfig_symbols(a.src) if a.src else None
+    bad = 0
+    unsupported = 0
+    lines = ["| probe | kind | required options | status |", "|---|---|---|---|"]
+    for r in rows:
+        status = "SUPPORTED"
+        notes = []
+        for sym, val in r["options"]:
+            if syms is not None and sym not in syms:
+                notes.append(f"{sym}: no such Kconfig symbol")
+                bad += 1
+            if cfg is not None and cfg.get(sym) != val:
+                notes.append(f"{sym}: wanted {val}, have {cfg.get(sym, 'unset')}")
+                status = "UNSUPPORTED"
+        if r["kind"] == "config" and cfg is not None:
+            # a config-only probe must also agree with its own expected value
+            if cfg.get(r["arg"]) != r["expected"]:
+                notes.append(f"{r['arg']}: probe expects {r['expected']}, have {cfg.get(r['arg'], 'unset')}")
+                status = "UNSUPPORTED"
+        if status == "UNSUPPORTED":
+            unsupported += 1
+        opts = ", ".join(f"{s}={v}" for s, v in r["options"]) or "-"
+        shown = status if cfg is not None else "unchecked"
+        print(f"{shown:12} {r['id']:40} {'; '.join(notes)}")
+        lines.append(f"| {r['id']} | {r['kind']} | {opts} | {shown}{' (' + '; '.join(notes) + ')' if notes else ''} |")
+    print(f"\n{len(rows)} probes, {unsupported} unsupported, {bad} unknown symbols")
+    if a.out:
+        with open(a.out, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    if bad:
+        return 1
+    if unsupported and not a.allow_unsupported:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

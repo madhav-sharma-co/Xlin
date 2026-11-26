@@ -75,6 +75,18 @@ The boot test uses third-party programs that are **installed on the CI runner an
 
 The initramfs itself (which contains BusyBox) is a build output: it is **not committed and not uploaded**; only its manifest (sizes and hashes, BusyBox version) and the logs are. The committed test scripts are `GPL-3.0-or-later` and contain no code from these projects. If an initramfs containing BusyBox is ever distributed, BusyBox's source-offer obligations apply and must be reviewed first. The boot test uses no XlinOS or Arch material.
 
+## Runtime validation components (Step 6)
+
+The runtime validation uses these programs, **installed on the CI runner from its distribution; none of their files or binaries is committed**:
+
+| Component | Use | Licence (as published by its project) |
+|---|---|---|
+| kmod (Ubuntu `kmod`, `libkmod2`) | `modprobe`, `insmod`, `rmmod`, `lsmod`, `depmod`, `modinfo` for the module tests; the `kmod` binary and the shared libraries `ldd` reports for it are copied into the test initramfs at build time | tools `GPL-2.0-or-later`, `libkmod` `LGPL-2.1-or-later` (see `/usr/share/doc/kmod/copyright` on the runner) |
+| e2fsprogs, dosfstools, mtools, squashfs-tools, genisoimage, btrfs-progs, xfsprogs, ntfs-3g | Build the small test disk images without root | each under its own licence (mostly `GPL-2.0` family); used as tools only, nothing copied |
+| Arch Linux `linux-lts` kernel, `qemu`, `edk2-ovmf` (optional baseline job only) | A comparison kernel booted with the same test guest | `GPL-2.0-only` and the projects' own licences |
+
+The exact package versions used by each CI run are printed in that run's step summary. The runtime initramfs (which contains BusyBox, kmod and the shared libraries kmod needs) and the disk images (which contain the kernel's own modules) are **build outputs and are not committed**. The initramfs is passed between two CI jobs as a short-lived (3 days) workflow artifact so the Arch baseline can reuse the identical guest; that is not a release or distribution. If such an initramfs is ever distributed, the source-offer obligations for BusyBox, kmod and the libraries apply and must be reviewed first. The committed test scripts are `GPL-3.0-or-later` (the probe table and allowlist are data in the same repository) and contain no code from these projects.
+
 ## Third-party material
 
 Any third-party file added later is listed here with its origin, version, licence and the changes made, and keeps its original notices.

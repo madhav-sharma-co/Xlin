@@ -1,0 +1,627 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Xlin Runtime Test: expanded runtime validation of the Xlin Kernel in QEMU + OVMF (Phase B, Step 6).
+
+Boots the kernel (QEMU -kernel/-initrd through OVMF, so the EFI stub runs; this does NOT test Xlin
+Boot) with the runtime guest from tests/runtime, one boot per SCENARIO. A scenario names the
+guest suites to run, the virtual hardware to attach and the kernel options it needs. The guest
+prints one 'XLIN-TEST:' line per check; this host tool judges them.
+
+  * a scenario whose required kernel options are absent from the build's final .config, or whose
+    disk image could not be built, is reported NOT TESTED with the reason, never as a pass;
+  * a run PASSES only if the guest finished (XLIN-RUNTIME: DONE), every requested suite ran to its
+    end, no check FAILED, the kernel did not panic/oops, QEMU exited with status 0 in time, and
+    (config suite) the guest's /proc/config.gz is byte-identical to the build's .config;
+  * --repeat N boots every run N times and reports the flake rate;
+  * measurements (boot time, memory, sizes) are INFORMATIONAL and never decide a result.
+
+Nothing here claims anything about physical hardware or production readiness.
+Exit status: 0 = every tested run passed; 1 = a run failed; 3 = cannot run (missing input/tool).
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import statistics
+import subprocess
+import sys
+import time
+from importlib import machinery, util
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_boot_helpers():
+    """Reuse the reviewed helpers of scripts/xlin-boot-test (it is not modified)."""
+    path = ROOT / "scripts" / "xlin-boot-test"
+    loader = machinery.SourceFileLoader("xlin_boot_test", str(path))
+    spec = util.spec_from_loader("xlin_boot_test", loader)
+    mod = util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+bt = _load_boot_helpers()
+cant = bt.cant
+
+TEST_RE = re.compile(r"^XLIN-TEST: (\S+) (\S+) (PASS|FAIL|SKIP|INFO|FINDING)(?: (.*))?$", re.M)
+METRIC_RE = re.compile(r"^XLIN-METRIC: (\S+) (\S+)(?: (\S+))?\s*$", re.M)
+SUITE_RE = re.compile(r"^XLIN-SUITE: (\S+) (BEGIN|END)\s*$", re.M)
+SHA_RE = re.compile(r"^XLIN-CONFIG-SHA256: ([0-9a-f]{64})\s*$", re.M)
+
+# ---- scenarios -----------------------------------------------------------------------------
+# disks: (image name without .img, bus); requires: kernel options that must be y or m in the build
+BASE_SUITES = "config,hardening,systemd,measure,logscan"
+
+SCENARIOS = {
+    "base": dict(desc="boot, /proc/config.gz, hardening and systemd probes, kernel-log scan, measurements",
+                 suites=BASE_SUITES, requires=["IKCONFIG_PROC"]),
+    "modules": dict(desc="load/unload every module with kmod, signature checks, tampered/unsigned modules",
+                    suites="config,modules,logscan,modsig", disks=[("modules", "virtio-blk")],
+                    images=["modules"], requires=["MODULES", "MODULE_SIG"], kmod=True, timeout=420, min_mem=1024),
+    "blk-virtio": dict(desc="virtio-blk disk: driver, ext4 read/write/remount",
+                       suites="disks", disks=[("ext4", "virtio-blk")], images=["ext4"],
+                       cmd=["xlin.devtest=xlin-ext4:virtio_blk"], requires=["VIRTIO_BLK", "EXT4_FS"]),
+    "blk-scsi": dict(desc="virtio-scsi disk", suites="disks", disks=[("ext4", "virtio-scsi")], images=["ext4"],
+                     cmd=["xlin.devtest=xlin-ext4:virtio_scsi"], requires=["SCSI_VIRTIO", "BLK_DEV_SD", "EXT4_FS"]),
+    "blk-ahci": dict(desc="AHCI/SATA disk", suites="disks", disks=[("ext4", "ahci")], images=["ext4"],
+                     cmd=["xlin.devtest=xlin-ext4:ahci"], requires=["SATA_AHCI", "BLK_DEV_SD", "EXT4_FS"]),
+    "blk-nvme": dict(desc="NVMe disk", suites="disks", disks=[("ext4", "nvme")], images=["ext4"],
+                     cmd=["xlin.devtest=xlin-ext4:nvme"], requires=["BLK_DEV_NVME", "EXT4_FS"]),
+    "blk-usb": dict(desc="USB mass storage behind an xHCI controller", suites="disks", disks=[("ext4", "usb")],
+                    images=["ext4"], cmd=["xlin.devtest=xlin-ext4:usb-storage"],
+                    requires=["USB_XHCI_HCD", "USB_XHCI_PCI", "USB_STORAGE", "BLK_DEV_SD", "EXT4_FS"]),
+    "rng": dict(desc="virtio-rng hardware random number generator", suites="rng", qemu=["-device", "virtio-rng-pci"],
+                cmd=["xlin.rng=virtio_rng"], requires=["HW_RANDOM_VIRTIO"]),
+    "net-virtio": dict(desc="virtio-net, user-mode networking, DHCP and ping", suites="net",
+                       qemu=["-nic", "user,model=virtio-net-pci"], nic=True, cmd=["xlin.nic=virtio_net"],
+                       requires=["VIRTIO_NET"]),
+    "net-e1000e": dict(desc="Intel e1000e NIC, user-mode networking", suites="net",
+                       qemu=["-nic", "user,model=e1000e"], nic=True, cmd=["xlin.nic=e1000e"], requires=["E1000E"]),
+    "net-igb": dict(desc="Intel igb NIC (module), user-mode networking", suites="net",
+                    qemu=["-nic", "user,model=igb"], nic=True, cmd=["xlin.nic=igb", "xlin.premod=igb"], requires=["IGB"],
+                    disks=[("modules", "virtio-blk")], images=["modules"], kmod=True),
+    "gfx-std": dict(desc="standard VGA: framebuffer and DRM devices, fbcon", suites="graphics",
+                    qemu=["-vga", "std"], requires=["FB", "FRAMEBUFFER_CONSOLE", "DRM_FBDEV_EMULATION"]),
+    "gfx-virtio": dict(desc="virtio-vga: DRM virtio-gpu, framebuffer and fbcon", suites="graphics",
+                       qemu=["-vga", "none", "-device", "virtio-vga"],
+                       requires=["FB", "FRAMEBUFFER_CONSOLE", "DRM_FBDEV_EMULATION", "DRM_VIRTIO_GPU"]),
+    "fs": dict(desc="filesystems: ext4, FAT, squashfs+overlayfs, iso9660, UDF, Btrfs, XFS, NTFS3, tmpfs, FUSE",
+               suites="fs", timeout=420, min_mem=1024, kmod=True, dynamic_fs=True, requires=["MODULES"]),
+    "stress": dict(desc="short CPU/memory/fork/IO stress, then a kernel-log and taint check",
+                   suites="reliability,logscan", cmd=["xlin.stress=12"], requires=[], timeout=240),
+    "reboot": dict(desc="3 warm reboots of one VM, then the base checks",
+                   suites="config,logscan", disks=[("scratch", "virtio-blk")], images=["scratch"],
+                   cmd=["xlin.reboot=3"], reboot=3, requires=["VIRTIO_BLK"], timeout=300),
+}
+
+# filesystem entries for the "fs" scenario: image -> (guest type, mode, required option, mount name)
+FS_TABLE = [
+    ("fs-ext4", "ext4", "rw", "EXT4_FS"),
+    ("fs-vfat", "vfat", "rw", "VFAT_FS"),
+    ("fs-squashfs", "squashfs", "ro", "SQUASHFS"),
+    ("fs-iso9660", "iso9660", "ro", "ISO9660_FS"),
+    ("fs-udf", "udf", "ro", "UDF_FS"),
+    ("fs-btrfs", "btrfs", "rw", "BTRFS_FS"),
+    ("fs-xfs", "xfs", "rw", "XFS_FS"),
+    ("fs-ntfs", "ntfs3", "ro", "NTFS3_FS"),
+]
+MATRIX_KVM = [(1, 256), (1, 1024), (2, 512), (2, 1024), (4, 1024), (4, 4096), (8, 2048)]
+MATRIX_TCG = [(1, 512), (2, 1024), (4, 1024)]
+
+
+def parse_config(path):
+    cfg = {}
+    for line in Path(path).read_text(errors="replace").splitlines():
+        m = re.match(r"CONFIG_([A-Za-z0-9_]+)=(.*)$", line)
+        if m:
+            cfg[m.group(1)] = m.group(2)
+    return cfg
+
+
+def parse_images_txt(images):
+    """-> (built names, {name: reason it was not built})"""
+    built, notbuilt = set(), {}
+    f = Path(images) / "images.txt"
+    if f.is_file():
+        for line in f.read_text().splitlines():
+            p = line.split(None, 2)
+            if len(p) >= 2 and p[0] == "built":
+                built.add(p[1])
+            elif len(p) >= 2 and p[0] == "not-built":
+                notbuilt[p[1]] = p[2] if len(p) > 2 else "no reason recorded"
+    return built, notbuilt
+
+
+def attach_args(disks, images):
+    args, n = [], 0
+    for img, bus in disks:
+        path = Path(images) / f"{img}.img"
+        d = f"xd{n}"
+        # snapshot=on: guest writes never reach the image file, so runs are independent
+        args += ["-drive", f"if=none,id={d},file={path},format=raw,snapshot=on"]
+        if bus == "virtio-blk":
+            args += ["-device", f"virtio-blk-pci,drive={d}"]
+        elif bus == "virtio-scsi":
+            args += ["-device", f"virtio-scsi-pci,id=sc{n}", "-device", f"scsi-hd,drive={d},bus=sc{n}.0"]
+        elif bus == "ahci":
+            args += ["-device", f"ich9-ahci,id=ah{n}", "-device", f"ide-hd,drive={d},bus=ah{n}.0"]
+        elif bus == "nvme":
+            args += ["-device", f"nvme,drive={d},serial=xlin{n}"]
+        elif bus == "usb":
+            args += ["-device", f"qemu-xhci,id=xh{n}", "-device", f"usb-storage,drive={d},bus=xh{n}.0"]
+        else:
+            cant(f"unknown bus {bus}")
+        n += 1
+    return args
+
+
+class Ctx:
+    pass
+
+
+def plan_scenario(name, sc, ctx):
+    """Decide whether and how a scenario can run. -> (runnable spec dict | None, not-tested reason)"""
+    sc = dict(sc)
+    if ctx.cfg is not None:
+        missing = [o for o in sc.get("requires", []) if ctx.cfg.get(o) not in ("y", "m")]
+        if missing:
+            return None, "the build's kernel configuration lacks " + ", ".join(f"CONFIG_{o}" for o in missing)
+    built, notbuilt = ctx.built, ctx.notbuilt
+    for img in sc.get("images", []):
+        if img not in built:
+            return None, f"disk image '{img}' was not built: {notbuilt.get(img, 'not found in images.txt')}"
+        if not (Path(ctx.images) / f"{img}.img").is_file():
+            return None, f"disk image file {img}.img is missing"
+    sc["name"] = name
+    sc["cmd"] = list(sc.get("cmd", []))
+    sc["notes"] = []
+    if sc.get("kmod") and not ctx.has_kmod:
+        return None, "the initramfs was built without kmod (--kmod), which this scenario needs"
+    if sc.get("dynamic_fs"):
+        specs, disks = [], [("modules", "virtio-blk")]
+        if "modules" not in built:
+            return None, f"disk image 'modules' was not built: {notbuilt.get('modules', 'not found')}"
+        for img, typ, mode, opt in FS_TABLE:
+            if ctx.cfg is not None and ctx.cfg.get(opt) not in ("y", "m"):
+                sc["notes"].append(f"{typ}: NOT TESTED, CONFIG_{opt} is not set in the build")
+            elif img not in built:
+                sc["notes"].append(f"{typ}: NOT TESTED, image not built: {notbuilt.get(img, 'not found')}")
+            else:
+                disks.append((img, "virtio-blk"))
+                specs.append(f"{img}:{typ}:{mode}")
+        if ctx.cfg is None or ctx.cfg.get("OVERLAY_FS") in ("y", "m"):
+            if "fs-squashfs" in built and (ctx.cfg is None or ctx.cfg.get("SQUASHFS") in ("y", "m")):
+                specs.append("overlay:fs-squashfs")
+            else:
+                sc["notes"].append("overlayfs: NOT TESTED, needs the squashfs image and SQUASHFS")
+        else:
+            sc["notes"].append("overlayfs: NOT TESTED, CONFIG_OVERLAY_FS is not set")
+        specs.append("tmpfs")
+        if ctx.cfg is None or ctx.cfg.get("FUSE_FS") in ("y", "m"):
+            specs.append("fuse")
+        else:
+            sc["notes"].append("fuse: NOT TESTED, CONFIG_FUSE_FS is not set")
+        if "fs-exfat" in notbuilt:
+            sc["notes"].append(f"exfat: NOT TESTED, {notbuilt['fs-exfat']}")
+        sc["disks"] = disks
+        sc["cmd"].append("xlin.fstest=" + ",".join(specs))
+    return sc, None
+
+
+def build_cmd(sc, ctx, accel, smp, mem, run_dir, expect):
+    mem = max(mem, sc.get("min_mem", 0))
+    suites = sc["suites"]
+    cmdline = ["console=ttyS0,115200", "loglevel=7", "panic=-1", "rdinit=/init",
+               f"xlin.expect_release={expect}", f"xlin.suites={suites}"] + sc["cmd"]
+    vars_copy = run_dir / "OVMF_VARS.copy.fd"
+    shutil.copyfile(ctx.vars, vars_copy)
+    cmd = [ctx.qemu, "-machine", f"q35,accel={accel}", "-cpu", "host" if accel == "kvm" else "max",
+           "-m", str(mem), "-smp", str(smp), "-display", "none", "-monitor", "none", "-serial", "stdio"]
+    if not sc.get("reboot"):
+        cmd.append("-no-reboot")
+    if not sc.get("nic"):
+        cmd += ["-nic", "none"]
+    cmd += ["-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={ctx.code}",
+            "-drive", f"if=pflash,format=raw,unit=1,file={vars_copy}"]
+    cmd += sc.get("qemu", [])
+    cmd += attach_args(sc.get("disks", []), ctx.images) if sc.get("disks") else []
+    cmd += ["-kernel", str(ctx.kernel), "-initrd", str(ctx.initramfs), "-append", " ".join(cmdline)]
+    return cmd, mem
+
+
+def run_once(sc, ctx, accel, smp, mem, run_dir, expect):
+    run_dir.mkdir(parents=True, exist_ok=True)
+    cmd, mem = build_cmd(sc, ctx, accel, smp, mem, run_dir, expect)
+    (run_dir / "qemu-command.txt").write_text(" ".join(cmd) + "\n")
+    timeout = sc.get("timeout", 150) * (4 if accel == "tcg" else 1)
+    if ctx.timeout:
+        timeout = ctx.timeout
+    r = dict(scenario=sc["name"], accel=accel, smp=smp, mem=mem, dir=str(run_dir), timeout=timeout)
+    try:
+        g = bt.Guest(cmd, run_dir / "serial.log", run_dir / "qemu-stderr.log")
+    except OSError as e:
+        cant(f"cannot start QEMU: {e}")
+    fatal_at, timed_out = None, False
+    deadline = time.monotonic() + timeout
+    while True:
+        text = g.text()
+        if fatal_at is None and bt.FATAL.search(text):
+            fatal_at = time.monotonic() + 3
+        if fatal_at is not None and time.monotonic() >= fatal_at:
+            break
+        if g.proc.poll() is not None:
+            break
+        if time.monotonic() > deadline:
+            timed_out = True
+            break
+        time.sleep(0.1)
+    exited = g.proc.poll() is not None
+    rc = g.proc.poll()
+    if not exited:
+        try:
+            rc = g.proc.wait(timeout=2)
+            exited = True
+        except subprocess.TimeoutExpired:
+            pass
+    g.kill()
+    r["seconds"] = round(g.elapsed(), 2)
+    text = g.text()
+    r["exited_by_itself"] = exited
+    r["qemu_exit"] = rc if exited else None
+    r["timed_out"] = timed_out
+    evaluate(r, sc, ctx, text, expect)
+    (run_dir / "result.json").write_text(json.dumps(r, indent=1))
+    return r
+
+
+def evaluate(r, sc, ctx, text, expect):
+    checks = []  # (ok, name, detail)
+
+    def crit(name, ok, detail=""):
+        checks.append((bool(ok), name, detail))
+
+    tests = [(m.group(1), m.group(2), m.group(3), (m.group(4) or "").strip()) for m in TEST_RE.finditer(text)]
+    metrics = {}
+    for m in METRIC_RE.finditer(text):
+        try:
+            metrics.setdefault(m.group(1), []).append(float(m.group(2)))
+        except ValueError:
+            pass
+    r["metrics"] = {k: v[-1] for k, v in metrics.items()}
+    lines = text.split("\n")
+    first_err = next(((i + 1, l) for i, l in enumerate(lines) if bt.ERROR_LINE.search(l) or re.match(r"^XLIN-TEST: \S+ \S+ FAIL", l)), None)
+    r["first_error"] = f"serial.log line {first_err[0]}: {first_err[1].strip()}" if first_err else None
+
+    mrel = re.search(r"Linux version (\S+)", text)
+    rel = mrel.group(1) if mrel else None
+    r["kernel_release"] = rel
+    panic = bt.FATAL.search(text)
+    crit("kernel started with the expected release", rel == expect, f"log says {rel!r}, expected {expect!r}")
+    crit("booted through UEFI (OVMF)", "efi: EFI v" in text, "kernel log 'efi: EFI v...'")
+    crit("no kernel panic, oops or BUG", not panic, panic.group(0) if panic else "none seen")
+    crit("initramfs unpacked and /init ran", "Run /init as init process" in text and "XLIN-RUNTIME: BEGIN" in text, "kernel 'Run /init' and the guest banner")
+    done = "XLIN-RUNTIME: DONE" in text
+    crit("guest finished all suites (XLIN-RUNTIME: DONE)", done, "marker seen" if done else "marker missing")
+    began = {m.group(1) for m in SUITE_RE.finditer(text) if m.group(2) == "BEGIN"}
+    ended = {m.group(1) for m in SUITE_RE.finditer(text) if m.group(2) == "END"}
+    wanted = sc["suites"].split(",")
+    for s in wanted:
+        crit(f"suite '{s}' ran to its end", s in began and s in ended, "BEGIN/END seen" if s in ended else "missing BEGIN/END")
+    fails = [t for t in tests if t[2] == "FAIL"]
+    passes = [t for t in tests if t[2] == "PASS"]
+    skips = [t for t in tests if t[2] == "SKIP"]
+    crit("no check FAILED", not fails, "; ".join(f"{t[0]}.{t[1]}: {t[3]}" for t in fails[:5]) or f"{len(passes)} passed, {len(skips)} not tested")
+    for s in wanted:
+        if s in ("measure",):
+            continue
+        n = sum(1 for t in passes if t[0] == s)
+        if n == 0 and not any(t[0] == s and t[2] == "SKIP" for t in tests):
+            crit(f"suite '{s}' produced at least one pass", False, "no PASS (and no explained SKIP) lines")
+    msha = SHA_RE.search(text)
+    if "config" in wanted:
+        guest_sha = msha.group(1) if msha else None
+        if ctx.config_sha:
+            crit("guest /proc/config.gz is byte-identical to the build's .config", guest_sha == ctx.config_sha,
+                 f"guest {guest_sha}, build {ctx.config_sha}")
+        else:
+            crit("guest /proc/config.gz hash reported", bool(guest_sha), "no build .config given (--config): identity NOT compared")
+    r["config_sha_guest"] = msha.group(1) if msha else None
+    if sc.get("reboot"):
+        boots = len(re.findall(r"^XLIN-REBOOT: boot ", text, re.M))
+        crit(f"{sc['reboot'] + 1} boots of the same VM", boots == sc["reboot"] + 1, f"{boots} boot banners seen")
+        crit("reboot cycles reported PASS", any(t[0] == "reboot" and t[1] == "cycles" and t[2] == "PASS" for t in tests), "")
+    crit("QEMU exited cleanly with status 0", r["exited_by_itself"] and r["qemu_exit"] == 0,
+         f"exit status {r['qemu_exit']}" if r["exited_by_itself"] else "had to be stopped")
+    crit("finished within the time limit", not r["timed_out"], f"{r['seconds']}s of {r['timeout']}s")
+    r["checks"] = [dict(ok=ok, name=n, detail=d) for ok, n, d in checks]
+    r["tests"] = [dict(suite=a, name=b, status=c, detail=d) for a, b, c, d in tests]
+    findings = [t for t in tests if t[2] == "FINDING"]
+    r["counts"] = dict(pass_=len(passes), fail=len(fails), skip=len(skips), finding=len(findings))
+    r["passed"] = all(ok for ok, _, _ in checks)
+    # "clean" = passed AND no known unresolved finding was observed. A finding never makes a
+    # run fail on its own, but it also never lets the run count as clean.
+    r["clean"] = r["passed"] and not findings
+    if r["passed"]:
+        r["classification"] = "none"
+    elif "kernel" not in text.lower() and not text.strip():
+        r["classification"] = "harness or firmware: no output at all (see qemu-stderr.log)"
+    elif "Linux version " not in text:
+        r["classification"] = "firmware: OVMF never started the kernel"
+    elif panic:
+        r["classification"] = "kernel: panic/oops/BUG"
+    elif "Run /init as init process" not in text:
+        r["classification"] = "kernel: failed before /init"
+    elif fails:
+        r["classification"] = "kernel behaviour: a runtime check failed"
+    elif r["timed_out"]:
+        r["classification"] = "timeout: the guest did not finish"
+    else:
+        r["classification"] = "test: a criterion failed"
+
+
+def med(vals):
+    return statistics.median(vals) if vals else None
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Expanded runtime validation of the Xlin Kernel in QEMU + OVMF.")
+    ap.add_argument("--kernel", default=str(ROOT / "build/xlin-x86_64/report/bzImage"))
+    ap.add_argument("--initramfs", default=str(ROOT / "build/runtime-test/initramfs.cpio.zst"),
+                    help="made by: scripts/xlin-initramfs --runtime --kmod <kmod>")
+    ap.add_argument("--images", default=str(ROOT / "build/runtime-test/images"), help="directory made by scripts/xlin-test-images")
+    ap.add_argument("--config", help="the build's final .config (config-final): used for the identity check and to decide which scenarios are supported")
+    ap.add_argument("--scenarios", default="all", help="comma list, or 'all' (default); see --list")
+    ap.add_argument("--matrix", choices=["none", "kvm", "tcg", "auto"], default="none",
+                    help="also run the 'base' scenario over a vCPU/memory matrix (kvm: %s; tcg: %s)" % (MATRIX_KVM, MATRIX_TCG))
+    ap.add_argument("--strict-findings", action="store_true",
+                    help="exit with status 4 when every check passed but a known unresolved finding was observed")
+    ap.add_argument("--repeat", type=int, default=1, help="boots per run (flake rate = failures / boots)")
+    ap.add_argument("--accel", choices=["auto", "kvm", "tcg"], default="auto")
+    ap.add_argument("--smp", type=int, default=2)
+    ap.add_argument("--memory", type=int, default=1024)
+    ap.add_argument("--timeout", type=int, default=0, help="override the per-run limit (seconds)")
+    ap.add_argument("--expect-release", default=None)
+    ap.add_argument("--qemu", default="qemu-system-x86_64")
+    ap.add_argument("--ovmf-code")
+    ap.add_argument("--ovmf-vars")
+    ap.add_argument("--out", default=str(ROOT / "build/runtime-test/run"))
+    ap.add_argument("--list", action="store_true", help="list the scenarios and exit")
+    args = ap.parse_args()
+
+    if args.list:
+        for n, s in SCENARIOS.items():
+            print(f"{n:12} {s['desc']}")
+        return 0
+
+    expect = args.expect_release
+    if not expect:
+        v = bt.lock_value("source.version")
+        expect = f"{v}-xlin" if v else None
+    if not expect:
+        cant("cannot determine the expected kernel release; pass --expect-release")
+    ctx = Ctx()
+    ctx.kernel, ctx.initramfs, ctx.images = Path(args.kernel), Path(args.initramfs), args.images
+    if not ctx.kernel.is_file() or not bt.is_efi_kernel(ctx.kernel):
+        cant(f"kernel image missing or not EFI-bootable: {ctx.kernel}")
+    if not ctx.initramfs.is_file() or ctx.initramfs.stat().st_size == 0:
+        cant(f"initramfs not found or empty: {ctx.initramfs}")
+    ctx.qemu = shutil.which(args.qemu) if os.sep not in args.qemu else (args.qemu if os.access(args.qemu, os.X_OK) else None)
+    if not ctx.qemu:
+        cant(f"QEMU not found: {args.qemu}")
+    ctx.code, ctx.vars = args.ovmf_code, args.ovmf_vars
+    if not ctx.code or not ctx.vars:
+        ctx.code, ctx.vars = bt.find_ovmf()
+    if not ctx.code or not os.path.isfile(ctx.code):
+        cant("OVMF firmware not found")
+    if args.repeat < 1:
+        cant("--repeat must be at least 1")
+    ctx.timeout = args.timeout
+    ctx.cfg = parse_config(args.config) if args.config else None
+    ctx.config_sha = bt.sha256(args.config) if args.config else None
+    ctx.built, ctx.notbuilt = parse_images_txt(args.images)
+    ctx.has_kmod = "kmod:" in Path(str(ctx.initramfs) + ".manifest").read_text() if Path(str(ctx.initramfs) + ".manifest").is_file() else False
+    kvm_ok = os.access("/dev/kvm", os.R_OK | os.W_OK)
+    accel = args.accel if args.accel != "auto" else ("kvm" if kvm_ok else "tcg")
+    if accel == "kvm" and not kvm_ok:
+        cant("--accel kvm requested but /dev/kvm is not usable")
+
+    names = list(SCENARIOS) if args.scenarios == "all" else args.scenarios.split(",")
+    for n in names:
+        if n not in SCENARIOS:
+            cant(f"unknown scenario '{n}' (see --list)")
+
+    out = Path(args.out)
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    print("Xlin Runtime Test (QEMU + OVMF direct kernel boot; this does not test Xlin Boot or physical hardware)")
+    print(f"  kernel:    {ctx.kernel} (sha256 {bt.sha256(ctx.kernel)})")
+    print(f"  initramfs: {ctx.initramfs}  (kmod in initramfs: {ctx.has_kmod})")
+    print(f"  build config: {args.config or 'not given (identity check and support filtering off)'}")
+    print(f"  QEMU: {bt.tool_version([ctx.qemu, '--version'])}; OVMF {ctx.code} ({bt.package_version('ovmf')})")
+    print(f"  accel: {accel}; repeat: {args.repeat}; expected release {expect}")
+
+    # ---- plan the runs ----------------------------------------------------------------------
+    runs = []          # (run name, sc, accel, smp, mem)
+    nottested = []     # (name, reason)
+    for n in names:
+        sc, why = plan_scenario(n, SCENARIOS[n], ctx)
+        if sc is None:
+            nottested.append((n, why))
+        else:
+            runs.append((n, sc, accel, args.smp, args.memory))
+            for note in sc["notes"]:
+                nottested.append((f"{n}/{note.split(':')[0]}", note.split(": ", 1)[1] if ": " in note else note))
+    if args.matrix != "none":
+        base, why = plan_scenario("base", SCENARIOS["base"], ctx)
+        if base is None:
+            nottested.append(("matrix", why))
+        else:
+            mode = args.matrix if args.matrix != "auto" else ("kvm" if kvm_ok else "tcg")
+            if mode == "kvm" and not kvm_ok:
+                nottested.append(("matrix-kvm", "/dev/kvm is not usable on this machine"))
+            else:
+                for smp, mem in (MATRIX_KVM if mode == "kvm" else MATRIX_TCG):
+                    b = dict(base)
+                    b["name"] = "matrix"
+                    runs.append((f"matrix-{mode}-{smp}cpu-{mem}M", b, mode, smp, mem))
+
+    # ---- run ------------------------------------------------------------------------------------
+    results = {}
+    for rn, sc, ac, smp, mem in runs:
+        results[rn] = []
+        for i in range(1, args.repeat + 1):
+            print(f"\n=== {rn} [{ac}, {smp} vCPU, {max(mem, sc.get('min_mem', 0))} MiB] run {i}/{args.repeat}: {sc['desc'] if 'desc' in sc else ''}", flush=True)
+            r = run_once(sc, ctx, ac, smp, mem, out / f"{rn}-{i}", expect)
+            r["run"], r["index"] = rn, i
+            results[rn].append(r)
+            for c in r["checks"]:
+                if not c["ok"]:
+                    print(f"  FAIL {c['name']}: {c['detail']}")
+            for t in r["tests"]:
+                if t["status"] in ("FAIL",):
+                    print(f"  FAIL {t['suite']}.{t['name']}: {t['detail']}")
+            print(f"  -> {('PASS WITH OPEN FINDINGS' if not r['clean'] else 'PASS') if r['passed'] else 'FAIL'} in {r['seconds']} s ({r['counts']['pass_']} passed, {r['counts']['fail']} failed, {r['counts']['skip']} not tested, {r['counts']['finding']} open finding(s))"
+                  + ("" if r["passed"] else f"; classification: {r['classification']}; earliest error: {r['first_error']}"), flush=True)
+
+    # KASLR cannot be judged from one boot: landing on the link-time address happens by chance with a
+    # working KASLR. The guest reports such a boot as COLLISION (not tested); the run fails here only
+    # if every boot of a repeated run (3 or more) collided, which chance does not explain.
+    for rn, rs in results.items():
+        col = [r for r in rs if any(t["suite"] == "hardening" and t["name"] == "kaslr" and t["status"] == "SKIP"
+                                    and t["detail"].startswith("COLLISION") for t in r["tests"])]
+        if len(rs) >= 3 and len(col) == len(rs):
+            for r in rs:
+                r["passed"], r["clean"] = False, False
+                r["checks"].append(dict(ok=False, name="hardening.kaslr", detail=f"all {len(rs)} boots of {rn} had _text at the link-time address: KASLR is not moving the kernel"))
+            print(f"  FAIL {rn}: KASLR did not move the kernel in any of {len(rs)} boots")
+        elif col:
+            print(f"  NOTE {rn}: {len(col)} of {len(rs)} boots had _text at the link-time address (by chance; KASLR judged across boots)")
+
+    # ---- summary ---------------------------------------------------------------------------------
+    failed_runs = [rn for rn, rs in results.items() if any(not r["passed"] for r in rs)]
+    finding_boots = {}   # finding id -> (boots with it, boots whose log scan evaluated it, detail, -)
+    scanned = {}         # finding id -> boots in which the log scan ran (only boots with the logscan suite can show it)
+    hits = {}
+    for rs in results.values():
+        for r in rs:
+            for t in r["tests"]:
+                if t["name"].startswith("finding-"):
+                    scanned[t["name"]] = scanned.get(t["name"], 0) + 1
+                    if t["status"] == "FINDING":
+                        hits[t["name"]] = hits.get(t["name"], 0) + 1
+                        finding_boots[t["name"]] = (hits[t["name"]], 0, t["detail"], "")
+    for fid, (n, _, d, x) in list(finding_boots.items()):
+        finding_boots[fid] = (n, scanned[fid], d, x)
+    unclean_runs = [rn for rn, rs in results.items() if any(not r["clean"] for r in rs) and rn not in failed_runs]
+    if failed_runs:
+        verdict_text = "FAIL"
+    elif finding_boots:
+        verdict_text = (f"PASS WITH OPEN FINDINGS - every check passed, but {len(finding_boots)} known unresolved finding(s) "
+                        f"were observed in {len(unclean_runs)} of {len(results)} runs; this is NOT a clean pass")
+    else:
+        verdict_text = "PASS - every check passed and no known finding was observed in these boots"
+    md = ["# Xlin Kernel runtime validation", "",
+          "**QEMU + OVMF virtual machine only. This is not physical-hardware, Xlin Boot or production-readiness evidence.**", "",
+          f"Kernel `{ctx.kernel.name}` sha256 `{bt.sha256(ctx.kernel)}`; QEMU {bt.tool_version([ctx.qemu, '--version'])}; "
+          f"accelerator {accel}; {args.repeat} boot(s) per run.", "",
+          f"**Verdict: {verdict_text}**", "",
+          "## Runs", "", "| Run | vCPU | MiB | Boots | Passed | Boots with open finding | Flake rate | Time median (s) | Time min–max (s) | checks passed / failed / not tested |", "|---|---|---|---|---|---|---|---|---|---|"]
+    for rn, rs in results.items():
+        p = sum(1 for r in rs if r["passed"])
+        ts = [r["seconds"] for r in rs]
+        flake = f"{(len(rs) - p) / len(rs) * 100:.0f}%"
+        c = rs[-1]["counts"]
+        nf = sum(1 for r in rs if r["counts"]["finding"])
+        md.append(f"| {rn} | {rs[0]['smp']} | {rs[0]['mem']} | {len(rs)} | {p} | {nf} | {flake} | {med(ts):.1f} | {min(ts):.1f}–{max(ts):.1f} | {c['pass_']} / {c['fail']} / {c['skip']} |")
+    md += ["", "## Not tested", ""]
+    md += [f"- **{n}**: {w}" for n, w in nottested] or ["- nothing was skipped"]
+    md += ["", "## Failures", ""]
+    if not failed_runs:
+        md.append("- none")
+    for rn in failed_runs:
+        for r in results[rn]:
+            if not r["passed"]:
+                md.append(f"- **{rn}** run {r['index']}: {r['classification']}; earliest error: `{r['first_error']}`; log: `{Path(r['dir']).name}/serial.log`")
+                for c in r["checks"]:
+                    if not c["ok"]:
+                        md.append(f"  - {c['name']}: {c['detail']}")
+                for t in r["tests"]:
+                    if t["status"] == "FAIL":
+                        md.append(f"  - {t['suite']}.{t['name']}: {t['detail']}")
+    md += ["", "## Checks not performed by the guest (SKIP lines, with reasons)", ""]
+    seen = set()
+    for rn, rs in results.items():
+        for t in rs[0]["tests"]:
+            if t["status"] == "SKIP" and (t["suite"], t["name"], t["detail"]) not in seen:
+                seen.add((t["suite"], t["name"], t["detail"]))
+                md.append(f"- {rn}: {t['suite']}.{t['name']}: {t['detail']}")
+    if not seen:
+        md.append("- none")
+    md += ["", "## Open findings (known, UNRESOLVED; not accepted as normal)", ""]
+    descr = {}
+    kf = ROOT / "tests" / "runtime" / "known-findings.txt"
+    if kf.exists():
+        for ln in kf.read_text().splitlines():
+            c = ln.split("\t")
+            if ln and not ln.startswith("#") and len(c) >= 4:
+                descr[f"finding-{c[0]}"] = (c[2], c[3])
+    if not finding_boots:
+        md.append("- none observed in these boots (the scanner still checks for every entry of tests/runtime/known-findings.txt)")
+    for fid, (n, tot, detail, _) in sorted(finding_boots.items()):
+        st, why = descr.get(fid, ("OPEN", ""))
+        md.append(f"- **{fid[8:]}** [{st}]: observed in {n} of {tot} boots whose kernel log was scanned; runs affected: "
+                  + ", ".join(rn for rn, rs in results.items() if any(r['counts']['finding'] for r in rs)))
+        shown = re.sub(r"^\[[A-Z-]+\] ", "", detail)
+        md.append(f"  - example log line: `{shown}`")
+        if why:
+            md.append(f"  - {why}")
+    md += ["", "## Informational measurements (never gating)", "",
+           "Medians over the boots of each run; shared CI runners are noisy, so differences of a few percent are not meaningful.", "",
+           "| Run | metric | median | min | max | n |", "|---|---|---|---|---|---|"]
+    for rn, rs in results.items():
+        names_m = sorted({k for r in rs for k in r["metrics"]})
+        for k in names_m:
+            vals = [r["metrics"][k] for r in rs if k in r["metrics"]]
+            md.append(f"| {rn} | {k} | {med(vals):g} | {min(vals):g} | {max(vals):g} | {len(vals)} |")
+    md += ["", "## Every check of the first boot of each run", ""]
+    for rn, rs in results.items():
+        md += [f"### {rn}", "", "| Status | Check | Detail |", "|---|---|---|"]
+        for t in rs[0]["tests"]:
+            if t["status"] != "INFO" or t["name"] not in ("allowed", "size", "mac") and not t["detail"].startswith("not observed"):
+                md.append(f"| {t['status']} | {t['suite']}.{t['name']} | {t['detail'].replace('|', '/')[:1500]} |")
+        md.append("")
+    (out / "summary.md").write_text("\n".join(md) + "\n")
+    (out / "results.json").write_text(json.dumps(dict(runs=results, not_tested=nottested, accel=accel,
+                                                      repeat=args.repeat, kernel_sha256=bt.sha256(ctx.kernel)), indent=1))
+
+    print("\n" + "=" * 70)
+    ran = sum(len(v) for v in results.values())
+    print(f"{ran} boots in {len(results)} runs; {len(failed_runs)} runs with failures; {len(nottested)} items NOT TESTED")
+    for n, w in nottested:
+        print(f"  NOT TESTED {n}: {w}")
+    for rn in failed_runs:
+        print(f"  FAILED {rn}")
+    print(f"Summary: {out}/summary.md")
+    if not results:
+        print("RESULT: nothing was run")
+        return 3
+    for fid, (n, tot, _, _) in sorted(finding_boots.items()):
+        print(f"  OPEN FINDING {fid[8:]}: observed in {n} of {tot} scanned boots (not accepted as normal; see summary)")
+    if failed_runs:
+        print("RESULT: FAIL")
+        return 1
+    if finding_boots:
+        print(f"RESULT: PASS WITH OPEN FINDINGS (all checks passed; {len(finding_boots)} known unresolved finding(s) observed - NOT a clean pass)")
+        return 4 if args.strict_findings else 0
+    print("RESULT: PASS (every run that could be run passed; see NOT TESTED above for what could not)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

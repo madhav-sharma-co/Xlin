@@ -1,0 +1,11 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# minimal udhcpc script for the runtime test
+case $1 in
+bound | renew)
+	ifconfig "$interface" "$ip" netmask "${subnet:-255.255.255.0}" up
+	[ -n "$router" ] && route add default gw "${router%% *}" dev "$interface" 2>/dev/null
+	echo "XLIN-DHCP: ip=$ip router=$router dns=$dns"
+	;;
+esac

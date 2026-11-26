@@ -1,0 +1,216 @@
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RESEARCH, NON-GATING, manual only: does the "CPA detected W^X violation" notice (open finding
+# W-X-CPA-ITS) also appear on the newest 6.18.y stable and on current upstream mainline?
+#
+# This builds throw-away kernels from the Xlin configuration (config-final of an earlier build, then
+# `make olddefconfig` on the newer tree; the config differences are recorded). It does NOT change
+# Xlin's pinned source (upstream/), Xlin's configuration (config/) or any Xlin release. Nothing built
+# here is an Xlin Kernel; the images are kept as 14-day artifacts only.
+name: W^X newer-kernel research
+
+on:
+  workflow_dispatch:
+    inputs:
+      xlin_build_run_id:
+        description: "Kernel build run whose xlin-kernel-build / xlin-runtime-initramfs artifacts are used (pinned Xlin kernel, its config, the shared initramfs)"
+        required: false
+        default: "45369210790"
+      kernels_run_id:
+        description: "Optional: an earlier run of THIS workflow whose built kernels are reused (skips the build jobs)"
+        required: false
+        default: ""
+      stable_version:
+        description: "Stable 6.18.y to build (tarball from cdn.kernel.org)"
+        required: false
+        default: "6.18.65"
+      mainline_sha:
+        description: "Mainline commit to build (github.com/torvalds/linux)"
+        required: false
+        default: "8d7fe9885c62fc9a95bf55d9db244d9672a8aadc"
+
+permissions:
+  contents: read
+
+env:
+  # the same values as the dispatch inputs, with defaults for the pull_request trigger
+  XLIN_RUN: ${{ inputs.xlin_build_run_id || '45369210790' }}
+  KERNELS_RUN: ${{ inputs.kernels_run_id || '' }}
+  STABLE_VERSION: ${{ inputs.stable_version || '6.18.65' }}
+  MAINLINE_SHA: ${{ inputs.mainline_sha || '8d7fe9885c62fc9a95bf55d9db244d9672a8aadc' }}
+
+jobs:
+  build:
+    if: ${{ inputs.kernels_run_id == '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: [stable, mainline]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install the build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential flex bison bc libelf-dev libssl-dev zstd kmod file
+          gcc --version | head -n1; ld --version | head -n1; nproc
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlin-kernel-build
+          path: xlinart
+          run-id: ${{ env.XLIN_RUN }}
+          github-token: ${{ github.token }}
+
+      - name: Fetch the source (recorded exactly)
+        run: |
+          set -eu
+          mkdir -p out src
+          if [ "${{ matrix.kernel }}" = stable ]; then
+            v="$STABLE_VERSION"
+            base=https://cdn.kernel.org/pub/linux/kernel/v6.x
+            curl -fsSL -o linux.tar.xz "$base/linux-$v.tar.xz"
+            curl -fsSL -o sha256sums.asc "$base/sha256sums.asc"
+            want=$(grep " linux-$v.tar.xz\$" sha256sums.asc | awk '{print $1}')
+            got=$(sha256sum linux.tar.xz | awk '{print $1}')
+            echo "tarball sha256 $got (kernel.org sha256sums.asc says ${want:-NOT FOUND})"
+            [ -n "$want" ] && [ "$want" = "$got" ]
+            tar -xf linux.tar.xz -C src --strip-components=1
+            { echo "source=linux-$v.tar.xz"; echo "tarball_sha256=$got"; } >out/source.txt
+          else
+            sha="$MAINLINE_SHA"
+            git init -q src
+            git -C src fetch -q --depth 1 https://github.com/torvalds/linux "$sha"
+            git -C src checkout -q FETCH_HEAD
+            [ "$(git -C src rev-parse HEAD)" = "$sha" ]
+            { echo "source=torvalds/linux commit $sha"; echo "commit_date=$(git -C src log -1 --format=%cI)"; } >out/source.txt
+          fi
+          cat out/source.txt
+
+      - name: Configure (Xlin config-final + olddefconfig) and record the config differences
+        run: |
+          set -eu
+          cp xlinart/report/config-final out/xlin-config-final
+          cp xlinart/report/config-final src/.config
+          make -s -C src olddefconfig >out/olddefconfig.log 2>&1
+          cp src/.config out/config
+          make -s -C src kernelrelease | tee out/release
+          # every symbol whose value differs from the Xlin config (new symbols and changed defaults)
+          diff <(grep -E '^(CONFIG_|# CONFIG_)' out/xlin-config-final | sort) <(grep -E '^(CONFIG_|# CONFIG_)' out/config | sort) >out/config.diff || true
+          wc -l out/config.diff
+          for k in CPU_MITIGATIONS MITIGATION_ITS STRICT_KERNEL_RWX STRICT_MODULE_RWX DEBUG_WX EXECMEM_ROX ARCH_HAS_EXECMEM_ROX; do
+            echo "$k: xlin=$(grep -E "^(# )?CONFIG_$k[= ]" out/xlin-config-final | head -n1 | sed 's/ is not set/=n/;s/# //') new=$(grep -E "^(# )?CONFIG_$k[= ]" out/config | head -n1 | sed 's/ is not set/=n/;s/# //')"
+          done | tee out/relevant-options.txt
+
+      - name: Build bzImage
+        run: |
+          set -eu
+          make -C src -j"$(nproc)" KBUILD_BUILD_USER=xlin-wx KBUILD_BUILD_HOST=xlin-wx bzImage >out/build.log 2>&1 || { tail -n 60 out/build.log; exit 1; }
+          cp src/arch/x86/boot/bzImage out/bzImage
+          { gcc --version | head -n1; ld --version | head -n1; } >out/toolchain.txt
+          ls -l out/bzImage; cat out/toolchain.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wx-kernel-${{ matrix.kernel }}
+          path: out/
+          retention-days: 14
+
+  boot:
+    needs: build
+    if: ${{ always() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install QEMU, OVMF and zstd
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf zstd
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+          {
+            echo "### Host and tools"
+            echo '```'
+            grep -m1 'model name' /proc/cpuinfo
+            nproc
+            dpkg-query -W -f '${Package} ${Version}\n' qemu-system-x86 ovmf
+            qemu-system-x86_64 --version | head -n1
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlin-kernel-build
+          path: xlinart
+          run-id: ${{ env.XLIN_RUN }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlin-runtime-initramfs
+          path: rt
+          run-id: ${{ env.XLIN_RUN }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: wx-kernel-stable
+          path: k/stable
+          run-id: ${{ env.KERNELS_RUN || github.run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: wx-kernel-mainline
+          path: k/mainline
+          run-id: ${{ env.KERNELS_RUN || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Boot the pinned Xlin kernel and the two newer kernels alternately (same job, same QEMU)
+        run: |
+          set -o pipefail
+          for round in 1 2; do
+            python3 scripts/xlin-runtime-test --kernel xlinart/report/bzImage --initramfs rt/initramfs.cpio.zst \
+              --images /nonexistent --config xlinart/report/config-final --scenarios base --repeat 10 \
+              --out build/wx/pinned-$round 2>&1 | tee -a boot-pinned.log || true
+            for k in stable mainline; do
+              python3 scripts/xlin-runtime-test --kernel k/$k/bzImage --initramfs rt/initramfs.cpio.zst \
+                --images /nonexistent --config k/$k/config --expect-release "$(cat k/$k/release)" \
+                --scenarios base --repeat 10 --out build/wx/$k-$round 2>&1 | tee -a boot-$k.log || true
+            done
+          done
+
+      - name: Count ITS messages, CPA notices and DEBUG_WX results separately
+        if: always()
+        run: |
+          {
+            echo "### Pinned Xlin 6.18.64 vs newest 6.18.y vs mainline, same job host and QEMU"
+            echo
+            python3 scripts/xlin-wx-compare pinned=build/wx/pinned-1 pinned=build/wx/pinned-2 stable=build/wx/stable-1 stable=build/wx/stable-2 mainline=build/wx/mainline-1 mainline=build/wx/mainline-2
+            echo
+            for k in stable mainline; do echo "**$k**: $(cat k/$k/source.txt | tr '\n' ' ')"; echo; cat k/$k/relevant-options.txt | sed 's/^/    /'; echo "config symbols that differ from Xlin's: $(wc -l < k/$k/config.diff) diff lines"; echo; done
+            echo "This counts log lines. It does not decide whether the notice is harmless."
+          } | tee wx-newer.md | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wx-newer-kernels-results
+          path: |
+            wx-newer.md
+            build/wx/*/summary.md
+            build/wx/*/results.json
+            build/wx/*/*/serial.log
+            build/wx/*/*/qemu-command.txt
+          if-no-files-found: warn
+          retention-days: 14
