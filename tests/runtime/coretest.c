@@ -50,33 +50,30 @@ static long long ms_since(const struct timespec *a)
 	return (b.tv_sec - a->tv_sec) * 1000LL + (b.tv_nsec - a->tv_nsec) / 1000000;
 }
 
-static long memfree_kb(void)
+static long meminfo_kb(const char *key)
 {
 	FILE *f = fopen("/proc/meminfo", "r");
-	char l[128];
+	char l[128], fmt[64];
 	long v = -1;
-	while (f && fgets(l, sizeof l, f)) if (sscanf(l, "MemFree: %ld kB", &v) == 1) break;
+	snprintf(fmt, sizeof fmt, "%s: %%ld kB", key);
+	while (f && fgets(l, sizeof l, f)) if (sscanf(l, fmt, &v) == 1) break;
 	if (f) fclose(f);
 	return v;
 }
 
 static int mm(void)
 {
-	/* direct accounting test first: touching 64 MiB must use it, releasing it must give it back */
-	long f0 = memfree_kb();
+	/* direct accounting test first: the kernel's AnonPages counter must follow a 64 MiB mapping up
+	 * (by at least 60 MiB) and back down (to within 4 MiB of where it was) */
+	long a0 = meminfo_kb("AnonPages");
 	size_t al = 64UL << 20;
 	unsigned char *q = mmap(NULL, al, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (q != MAP_FAILED) for (size_t k = 0; k < al; k += 4096) q[k] = 1;
-	long f1 = memfree_kb();
+	long a1 = meminfo_kb("AnonPages");
 	if (q != MAP_FAILED) munmap(q, al);
-	long f2 = memfree_kb();
-	/* bounds are a sanity check, not a measurement: touching 64 MiB must take at least 48 MiB from
-	 * MemFree, and munmap must give back at least 75% of what was taken. (Observed in CI on KVM:
-	 * 53,516 kB taken and 48,279 kB returned, i.e. 90%; the kernel's own page tables and per-CPU
-	 * lists account for the rest.) */
-	long taken = f0 - f1, back = f2 - f1;
-	CHECK("memfree-accounting", f0 > 0 && taken >= 48 * 1024 && back * 4 >= taken * 3,
-	      "MemFree %ld kB before, %ld kB with 64 MiB touched (%ld kB taken), %ld kB after munmap (%ld kB returned)", f0, f1, taken, f2, back);
+	long a2 = meminfo_kb("AnonPages");
+	CHECK("anonpages-accounting", a0 >= 0 && a1 - a0 >= 60 * 1024 && a1 - a0 <= 72 * 1024 && a2 - a0 < 4 * 1024 && a2 - a0 > -4 * 1024,
+	      "AnonPages %ld kB before, %ld kB with 64 MiB touched (+%ld), %ld kB after munmap (%+ld vs before)", a0, a1, a1 - a0, a2, a2 - a0);
 
 	long pg = sysconf(_SC_PAGESIZE);
 	size_t len = 64UL << 20;
