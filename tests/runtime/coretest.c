@@ -50,8 +50,29 @@ static long long ms_since(const struct timespec *a)
 	return (b.tv_sec - a->tv_sec) * 1000LL + (b.tv_nsec - a->tv_nsec) / 1000000;
 }
 
+static long memfree_kb(void)
+{
+	FILE *f = fopen("/proc/meminfo", "r");
+	char l[128];
+	long v = -1;
+	while (f && fgets(l, sizeof l, f)) if (sscanf(l, "MemFree: %ld kB", &v) == 1) break;
+	if (f) fclose(f);
+	return v;
+}
+
 static int mm(void)
 {
+	/* direct accounting test first: touching 64 MiB must use it, releasing it must give it back */
+	long f0 = memfree_kb();
+	size_t al = 64UL << 20;
+	unsigned char *q = mmap(NULL, al, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (q != MAP_FAILED) for (size_t k = 0; k < al; k += 4096) q[k] = 1;
+	long f1 = memfree_kb();
+	if (q != MAP_FAILED) munmap(q, al);
+	long f2 = memfree_kb();
+	CHECK("memfree-accounting", f0 > 0 && f0 - f1 >= 56 * 1024 && f2 - f1 >= 56 * 1024,
+	      "MemFree %ld kB before, %ld kB with 64 MiB touched, %ld kB after munmap", f0, f1, f2);
+
 	long pg = sysconf(_SC_PAGESIZE);
 	size_t len = 64UL << 20;
 	unsigned char *p = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
