@@ -37,7 +37,7 @@ Which party is "at fault" (Hyper-V/Azure presenting an inconsistent CPUID, QEMU 
 ## 3. What is NOT established
 
 - **No natural reproduction in this investigation.** The real failing class (Xeon Platinum 8573C with AMX exposed, 43+ boots on 2026-11-23/24, also Arch linux-lts under QEMU 11.1.3 in run 45167768437) did not occur again:
-  all 8 8573C runners sampled on 2026-11-25 (4 research runs, 52 jobs) exposed no AMX (leaf 7 EDX=0x20000010, leaf 0xd EAX=0xe7, level 0x1c) and did not fire.
+  all 3 Xeon Platinum 8573C runners that landed on 2026-11-25 (64 research jobs over 4 runs) exposed no AMX (leaf 7 EDX=0x20000010, leaf 0xd EAX=0xe7, level 0x1c) and did not fire.
   That the earlier failing runners had level 0x1c is **inferred** (same CPU model reports level 0x1c today; the old logs do not record the guest level; QEMU 8.2.2 gives no other route to an empty leaf 0x1d with AMX-TILE set).
 - Why the 8573C runners exposed AMX on 11-23/24 but not on 11-25 (fleet/host configuration): unknown, not visible from inside the runner.
 - AMX functional testing was done only in guests where the check fired by `level=0x1c` on 6975P-C/6973P-C hosts (arch_prctl permission, ldtilecfg/tilezero/tilestored, and in the last run a TDPBSSD int8 multiply with a known result). Not tested: bf16/fp16 paths, context switch / signal frames / ptrace / XFD with several threads, long-running load, performance, real failing hosts, bare metal.
@@ -57,7 +57,7 @@ Job logs were also archived (see the evidence tarball delivered with the report)
 
 | QEMU | -cpu | guest AMX-TILE | guest max leaf | boots | check fired |
 |---|---|---|---|---|---|
-| 8.2.2 / 11.1.3 | host | 1 | 0x24 | 330 (all 4 kernels) | 0 |
+| 8.2.2 / 11.1.3 | host | 1 | 0x24 | 456 (all 4 kernels) | 0 |
 | 8.2.2 / 11.1.3 | host,level=0x1c | 1 | 0x1c | 212 | **212** |
 | 8.2.2 / 11.1.3 | host,level=0x1d | 1 | 0x1d | 68 | 0 |
 | 8.2.2 / 11.1.3 | host,level=0x1c,-amx-tile | 0 | 0x1c | 116 | 0 |
