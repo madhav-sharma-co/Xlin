@@ -119,6 +119,7 @@ FS_TABLE = [
     ("fs-btrfs", "btrfs", "rw", "BTRFS_FS"),
     ("fs-xfs", "xfs", "rw", "XFS_FS"),
     ("fs-ntfs", "ntfs3", "ro", "NTFS3_FS"),
+    ("fs-exfat", "exfat", "rw", "EXFAT_FS"),
 ]
 MATRIX_KVM = [(1, 256), (1, 1024), (2, 512), (2, 1024), (4, 1024), (4, 4096), (8, 2048)]
 MATRIX_TCG = [(1, 512), (2, 1024), (4, 1024)]
