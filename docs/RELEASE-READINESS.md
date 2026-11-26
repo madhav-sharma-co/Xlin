@@ -44,7 +44,7 @@ Written 2026-11-26 against the pinned Linux 6.18.64 (`fd7cfd39c88596fec816639ad8
 |---|---|
 | Upstream kselftests | Feasible from the pinned tree inside the VM; not run. Largest missing regression suite |
 | Reproducible build | Measured: **not** byte-reproducible (build timestamp, per-build module signing key). Needs the signing-key decision (`MODULE_SIG_FORCE` open decision) before it can be made so |
-| Performance benchmarks | Only boot timing exists (4.0-5.0 s boot-to-poweroff on KVM). No benchmark, no baseline comparison: **no performance claim is supported** |
+| Performance benchmarks | Only boot-timing observations exist in CI logs. No benchmark, no baseline comparison: **no performance claim is supported** |
 | Sanitiser and fuzz builds (KASAN, KCSAN, lockdep, syzkaller) | Would need a separate debug configuration; not built |
 | Secure Boot in OVMF | Needs signing keys and a bootloader decision (Xlin Boot or other) |
 | exFAT | No unprivileged tool can populate an image |
@@ -62,7 +62,7 @@ CI run `45813368893` (head `f6a347d`, merged as `02cd705`): all six jobs passed 
 
 ## 2. Completed kernel capabilities (demonstrated in QEMU only)
 
-* Pinned, verifiable upstream source; approved x86_64 UEFI configuration (137-setting fragment, 1,746 `=y`, 41 `=m`).
+* Pinned, verifiable upstream source; approved x86_64 UEFI configuration (`xlin_defconfig`, a 137-setting fragment over upstream's defconfig).
 * Boots under OVMF to user space; initramfs boot; `/proc/config.gz`.
 * Modules with signing on (not enforced); kmod load/unload.
 * SMP with CPU hotplug; kvm-clock timers; panic and automatic reboot recovery; warm reboots.
@@ -97,7 +97,7 @@ CI run `45813368893` (head `f6a347d`, merged as `02cd705`): all six jobs passed 
 
 ## 5. Performance evidence
 
-Boot-to-power-off 4.0-5.0 s on KVM in the 24-boot matrix; build 12-15 min on a 4-vCPU shared runner; `bzImage` 12.2 MB, 39 modules 9.7 MB. **No comparison with any other kernel has been made; no claim of smaller, lighter or faster is supported.** CI timings are noisy.
+Size: `bzImage` 12,174,336 bytes; 39 modules, 9,729,035 bytes compressed (docs/CONFIGURATION.md and BUILD.md). Boot timing is recorded per run in the CI logs. **No comparison with any other kernel has been made; no claim of smaller, lighter or faster is supported.** CI timings are noisy.
 
 ## 6. Release blockers
 
