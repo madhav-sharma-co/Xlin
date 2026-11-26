@@ -11,7 +11,7 @@ All notable changes to Xlin are recorded here. The format follows [Keep a Change
 
 ### Added
 
-- Added SMP/CPU-hotplug, timer, memory-management and deliberate panic/recovery QEMU runtime scenarios. Hardened guest helper failure handling and made panic recovery verify its scratch-disk marker before and after reboot; QEMU-only evidence, not bare-metal validation.
+- Added SMP/CPU-hotplug, timer, memory-management and deliberate panic/recovery QEMU runtime scenarios. Hardened guest helper failure handling and made panic recovery verify its scratch-disk marker before and after reboot. Added exFAT image creation and runtime filesystem coverage where CI can mount the image; QEMU-only evidence, not bare-metal validation.
 - TCG evidence corrected: the unsupported "1 of 56" / "1 of 136" TCG counts replaced by 0 of 248 TCG boots across 31 runs (per-boot logs); "43" clarified as 43 boot events. XTILE-CPUID stays EXPLAINED-OPEN.
 - XTILE-CPUID finding text and docs updated with the reproduced forced mechanism (guest max CPUID leaf 0x1c with AMX advertised), AMX functional results and limits; status stays EXPLAINED-OPEN, original 8573C failure not reproduced; see docs/XTILE-CPUID-INVESTIGATION.md.
 - Known finding W-X-CPA-ITS reclassified EXPLAINED-UPSTREAM (upstream commit ea6fd393cb9e); still reported as a finding, evidence and limitations kept, no upstream report sent; XTILE-CPUID stays EXPLAINED-OPEN.
