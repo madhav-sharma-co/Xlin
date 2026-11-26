@@ -151,7 +151,7 @@ else
 fi
 
 # ---- filesystem images ---------------------------------------------------------------------
-for t in ext4 vfat squashfs iso9660 udf btrfs xfs ntfs; do content "$work/fs-$t" "fs-$t" "xlin-fs-ok-$t"; done
+for t in ext4 vfat squashfs iso9660 udf btrfs xfs ntfs exfat; do content "$work/fs-$t" "fs-$t" "xlin-fs-ok-$t"; done
 # ntfs is mounted with -t ntfs3 by the guest; its test file records the name "ntfs3"
 printf '%s' xlin-fs-ok-ntfs3 >"$work/fs-ntfs/XLIN-FS-TEST"
 
