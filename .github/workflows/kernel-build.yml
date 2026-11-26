@@ -213,7 +213,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf busybox-static zstd file kmod \
-            e2fsprogs dosfstools mtools squashfs-tools genisoimage btrfs-progs xfsprogs ntfs-3g
+            e2fsprogs dosfstools mtools squashfs-tools genisoimage btrfs-progs xfsprogs ntfs-3g exfatprogs
           {
             echo "### Tools used by the runtime test (installed on the runner, not committed)"
             echo '```'
