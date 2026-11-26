@@ -173,7 +173,8 @@ static int mm(void)
 	/* brk/sbrk */
 	void *b0 = sbrk(0), *b1 = sbrk(pg * 32);
 	CHECK("brk-grow", b1 == b0 && sbrk(0) == (char *)b0 + pg * 32, "heap grew by 32 pages");
-	sbrk(-(long)(pg * 32));
+	void *b2 = sbrk(-(long)(pg * 32));
+	CHECK("brk-shrink", b2 != (void *)-1 && sbrk(0) == b0, "heap returned to its original break");
 
 	/* transparent huge pages are reported, not required */
 	FILE *f = fopen("/sys/kernel/mm/transparent_hugepage/enabled", "r");
@@ -182,8 +183,8 @@ static int mm(void)
 	else rep("thp", "SKIP", "no /sys/kernel/mm/transparent_hugepage (CONFIG_TRANSPARENT_HUGEPAGE not set)");
 
 	/* munmap releases memory: MemAvailable must recover */
-	munmap(p, len);
-	rep("munmap", "PASS", "64 MiB mapping released");
+	r = munmap(p, len);
+	CHECK("munmap", r == 0, "64 MiB mapping released (munmap=%d, errno=%d)", r, r == 0 ? 0 : errno);
 	return 0;
 }
 
