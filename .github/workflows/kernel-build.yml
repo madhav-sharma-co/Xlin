@@ -242,7 +242,7 @@ jobs:
           # shellcheck disable=SC2086
           shellcheck -x $host
           python3 -m py_compile scripts/xlin-runtime-test scripts/xlin-probe-map scripts/xlin-runtime-compare scripts/xlin-wx-compare
-          for f in tests/runtime/init tests/runtime/lib.sh tests/runtime/probes.sh tests/runtime/reboot-cycle tests/runtime/udhcpc.script tests/runtime/suites/*.sh; do sh -n "$f"; done
+          for f in tests/runtime/init tests/runtime/lib.sh tests/runtime/probes.sh tests/runtime/reboot-cycle tests/runtime/panic-cycle tests/runtime/udhcpc.script tests/runtime/suites/*.sh; do sh -n "$f"; done
 
       - name: Xlin Fetch and Xlin Verify (pinned source, needed for gen_init_cpio and Kconfig)
         run: |
