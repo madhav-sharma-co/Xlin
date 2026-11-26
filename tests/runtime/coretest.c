@@ -113,7 +113,10 @@ static int mm(void)
 	CHECK("prot-none-faults", sa_ok && prot_none_ok && got_segv == 1, "read of a PROT_NONE page raised SIGSEGV");
 	int prot_read_ok = mprotect(p, pg, PROT_READ) == 0;
 	got_segv = 0;
-	if (sa_ok && prot_read_ok && !sigsetjmp(jb, 1)) p[0] = 2;
+	/* volatile forces the attempted store to reach memory; otherwise an optimizing
+	 * compiler could discard this otherwise-dead write and make the fault test vacuous. */
+	volatile unsigned char *vp = p;
+	if (sa_ok && prot_read_ok && !sigsetjmp(jb, 1)) vp[0] = 2;
 	CHECK("prot-read-blocks-write", sa_ok && prot_read_ok && got_segv == 1, "write to a PROT_READ page raised SIGSEGV");
 	if (mprotect(p, pg, PROT_READ | PROT_WRITE) != 0) {
 		rep("mprotect-restore", "FAIL", "could not restore read/write permissions (errno %d)", errno);
