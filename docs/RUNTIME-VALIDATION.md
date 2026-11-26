@@ -72,7 +72,7 @@ Probes are *behavioural* where the kernel exposes behaviour (KASLR moved `_text`
 | `rng` | virtio-rng registered as the hardware RNG and produces data |
 | `net-virtio`, `net-e1000e`, `net-igb` | NIC driver, link, DHCP lease and ICMP echo to the QEMU gateway (user-mode networking) |
 | `gfx-std`, `gfx-virtio` | `/dev/fb0`, DRM card, framebuffer console messages (pixel contents are **not** checked) |
-| `fs` | ext4, FAT, squashfs, overlayfs (squashfs lower + tmpfs upper), ISO 9660, UDF, Btrfs, XFS, NTFS3, tmpfs; FUSE availability |
+| `fs` | ext4, FAT, exFAT, squashfs, overlayfs (squashfs lower + tmpfs upper), ISO 9660, UDF, Btrfs, XFS, NTFS3, tmpfs; FUSE availability |
 | `stress` | short CPU, memory, fork and I/O stress, then a kernel-log and taint check |
 | `smp` | 4 vCPUs, per-CPU affinity/work, IPI counters, and offline/online of each non-boot CPU |
 | `timer` | clocksource, monotonic clock, nanosleep, timerfd, interval timers and uptime progression |
@@ -99,7 +99,7 @@ See `docs/LICENSING.md`. kmod, the filesystem tools and QEMU/OVMF are installed 
 ## Known gaps (honest list)
 
 * Not tested: physical hardware; drivers for hardware QEMU cannot emulate here (r8169, tg3, igc, i915, amdgpu, Wi-Fi, TPM); Xlin Boot; XlinOS.
-* exFAT is not tested: no tool can populate an exFAT image without mounting it (root).
+* exFAT images are created with exfatprogs and populated through a temporary privileged loop mount on CI; if the runner cannot mount them, the image is explicitly reported NOT TESTED.
 * The new SMP, timer, memory-management and panic-recovery scenarios validate guest-visible behavior in QEMU only; they do not replace bare-metal CPU, timer, memory-pressure or crash-recovery testing.
 * FUSE is checked for availability only; no userspace FUSE daemon is run.
 * Framebuffer pixel contents are not checked.
