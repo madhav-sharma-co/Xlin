@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <poll.h>
 #include <sys/timerfd.h>
 #include <sys/time.h>
 #include <sys/wait.h>
@@ -228,7 +229,15 @@ static int timer(void)
 	unsigned long long total = 0, x;
 	int timer_clock_ok = clock_gettime(CLOCK_MONOTONIC, &t0) == 0;
 	timer_ok = timer_ok && timer_clock_ok;
+	/* A broken periodic timer must not hang the entire runtime suite. Bound the
+	 * complete wait to one second, including time spent across interrupted polls. */
 	while (timer_ok && total < 20) {
+		long long elapsed = ms_since(&t0);
+		if (elapsed < 0 || elapsed >= 1000) { timer_ok = 0; break; }
+		struct pollfd pfd = { .fd = tf, .events = POLLIN, .revents = 0 };
+		int ready = poll(&pfd, 1, (int)(1000 - elapsed));
+		if (ready < 0 && errno == EINTR) continue;
+		if (ready <= 0 || !(pfd.revents & POLLIN)) { timer_ok = 0; break; }
 		ssize_t nr = read(tf, &x, sizeof x);
 		if (nr < 0 && errno == EINTR) continue;
 		if (nr != (ssize_t)sizeof x) { timer_ok = 0; break; }
