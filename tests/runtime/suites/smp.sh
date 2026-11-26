@@ -9,9 +9,20 @@ info cpus "online='$on' processors=$n expected='${want:-unset}'"
 [ "$n" -ge 2 ] || { skip hotplug "only $n CPU; hotplug and cross-CPU checks need at least 2"; exit 0; }
 # every CPU runs work pinned to it
 [ -x /tests/coretest ] && /tests/coretest affinity || fail coretest "the helper /tests/coretest is missing"
-# inter-processor interrupts are delivered: the function-call IPI counter is non-zero
-ipi=$(grep -E 'Function call interrupts|TLB shootdowns|Rescheduling interrupts' /proc/interrupts | tr -s ' ' | tr '\n' ';')
-[ -n "$ipi" ] && pass ipi-counters "$ipi" || fail ipi-counters "no IPI lines in /proc/interrupts"
+# Require actual interrupt counts, not merely the presence of label lines. The affinity
+# test above exercises cross-CPU scheduling; at least one function-call or reschedule IPI
+# should therefore have been delivered on an SMP guest.
+ipi=$(grep -E 'Function call interrupts|Rescheduling interrupts|TLB shootdowns' /proc/interrupts | tr -s ' ' | tr '\n' ';')
+if printf '%s\n' "$ipi" | awk '
+/Function call interrupts|Rescheduling interrupts|TLB shootdowns/ {
+	for (i = 2; i <= NF; i++) if ($i ~ /^[0-9]+$/ && $i + 0 > 0) seen = 1
+}
+END { exit !seen }
+'; then
+	pass ipi-counters "$ipi"
+else
+	fail ipi-counters "IPI labels were present but all reported counters were zero or unavailable: $ipi"
+fi
 # offline and online every non-boot CPU, one at a time, with work in between
 fails=0
 for c in /sys/devices/system/cpu/cpu[1-9]*; do
