@@ -1,0 +1,29 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Kernel panic and recovery. xlin.panic=1 on the command line, a scratch disk as the only virtio-blk
+# device. Boot 1 writes a marker to sector 0 and crashes the kernel deliberately (sysrq-c). The
+# command line has panic=-1, so the kernel reboots at once. Boot 2 finds the marker, clears it and
+# runs the normal suites on the recovered system. The host judges both boots.
+[ -n "$(sed -n 's/.*[ ]xlin\.panic=\(1\).*/\1/p' /proc/cmdline)" ] || exit 0
+dev=""
+i=0
+while [ "$i" -lt 15 ] && [ -z "$dev" ]; do
+	for b in /sys/block/vd*; do [ -b "/dev/${b##*/}" ] && dev=/dev/${b##*/}; done
+	[ -n "$dev" ] || { sleep 1; i=$((i + 1)); }
+done
+[ -n "$dev" ] || { echo "XLIN-TEST: panic disk-appears FAIL no scratch disk"; exit 0; }
+cur=$(dd if="$dev" bs=512 count=1 2>/dev/null | tr -dc 'A-Z' | head -c 8)
+if [ "$cur" != PANICKED ]; then
+	echo "XLIN-PANIC: boot 1 of 2 uptime=$(cut -d' ' -f1 /proc/uptime): crashing the kernel on purpose (sysrq-c)"
+	printf PANICKED | dd of="$dev" bs=512 count=1 conv=sync 2>/dev/null
+	sync
+	echo 1 >/proc/sys/kernel/sysrq
+	echo c >/proc/sysrq-trigger
+	sleep 30
+	echo "XLIN-TEST: panic crash-triggered FAIL the kernel did not panic within 30 s of sysrq-c"
+	exit 0
+fi
+printf 0 | dd of="$dev" bs=512 count=1 conv=sync 2>/dev/null
+echo "XLIN-PANIC: boot 2 of 2 uptime=$(cut -d' ' -f1 /proc/uptime): recovered after the panic"
+echo "XLIN-TEST: panic recovered PASS the VM rebooted by itself after the panic (panic=-1) and a new boot reached user space, marker on $dev"

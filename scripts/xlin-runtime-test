@@ -95,6 +95,15 @@ SCENARIOS = {
                suites="fs", timeout=420, min_mem=1024, kmod=True, dynamic_fs=True, requires=["MODULES"]),
     "stress": dict(desc="short CPU/memory/fork/IO stress, then a kernel-log and taint check",
                    suites="reliability,logscan", cmd=["xlin.stress=12"], requires=[], timeout=240),
+    "smp": dict(desc="4 vCPUs: CPU count, work pinned to every CPU, IPIs, hot-unplug and re-plug of every non-boot CPU",
+                suites="config,smp,logscan", smp=4, cmd=["xlin.smp=4"], requires=["SMP"], timeout=240),
+    "timer": dict(desc="clocksource, timer interrupts, nanosleep, timerfd, interval timer, monotonic clock",
+                  suites="config,timer,logscan", requires=[], timeout=240),
+    "mm": dict(desc="memory management: mmap, mprotect faults, madvise, mremap, fork copy-on-write, shared mappings, brk, tmpfs limit",
+               suites="config,mm,logscan", min_mem=1024, requires=[], timeout=240),
+    "panic-recovery": dict(desc="deliberate kernel panic (sysrq-c), automatic reboot (panic=-1), recovery boot runs the base checks",
+                           suites="config,logscan", disks=[("scratch", "virtio-blk")], images=["scratch"],
+                           cmd=["xlin.panic=1"], reboot=1, expect_panic=True, requires=["VIRTIO_BLK", "MAGIC_SYSRQ"], timeout=300),
     "reboot": dict(desc="3 warm reboots of one VM, then the base checks",
                    suites="config,logscan", disks=[("scratch", "virtio-blk")], images=["scratch"],
                    cmd=["xlin.reboot=3"], reboot=3, requires=["VIRTIO_BLK"], timeout=300),
@@ -251,7 +260,7 @@ def run_once(sc, ctx, accel, smp, mem, run_dir, expect):
     deadline = time.monotonic() + timeout
     while True:
         text = g.text()
-        if fatal_at is None and bt.FATAL.search(text):
+        if fatal_at is None and not sc.get("expect_panic") and bt.FATAL.search(text):
             fatal_at = time.monotonic() + 3
         if fatal_at is not None and time.monotonic() >= fatal_at:
             break
@@ -302,6 +311,18 @@ def evaluate(r, sc, ctx, text, expect):
     rel = mrel.group(1) if mrel else None
     r["kernel_release"] = rel
     panic = bt.FATAL.search(text)
+    if sc.get("expect_panic"):
+        # exactly one panic is expected and it must be the deliberate one; anything else is a real failure
+        fat = [m.group(0) for m in bt.FATAL.finditer(text)]
+        crashes = len(re.findall(r"Kernel panic - not syncing: sysrq triggered crash", text))
+        other = [f for f in fat if f != "Kernel panic - not syncing"]
+        r["expected_panics"] = crashes
+        crit("the deliberate panic happened exactly once", crashes == 1, f"{crashes} 'sysrq triggered crash' panic(s) in the log")
+        crit("no other panic, oops or BUG", not other, "; ".join(other[:3]) or "none seen")
+        crit("the VM rebooted itself after the panic (panic=-1)", len(re.findall(r"^XLIN-PANIC: boot ", text, re.M)) == 2,
+             f"{len(re.findall(r'^XLIN-PANIC: boot ', text, re.M))} boot banners (expected 2)")
+        crit("recovery boot reached user space", any(t[0] == "panic" and t[1] == "recovered" and t[2] == "PASS" for t in tests), "XLIN-TEST: panic recovered")
+        panic = None
     crit("kernel started with the expected release", rel == expect, f"log says {rel!r}, expected {expect!r}")
     crit("booted through UEFI (OVMF)", "efi: EFI v" in text, "kernel log 'efi: EFI v...'")
     crit("no kernel panic, oops or BUG", not panic, panic.group(0) if panic else "none seen")
@@ -332,7 +353,7 @@ def evaluate(r, sc, ctx, text, expect):
         else:
             crit("guest /proc/config.gz hash reported", bool(guest_sha), "no build .config given (--config): identity NOT compared")
     r["config_sha_guest"] = msha.group(1) if msha else None
-    if sc.get("reboot"):
+    if sc.get("reboot") and not sc.get("expect_panic"):
         boots = len(re.findall(r"^XLIN-REBOOT: boot ", text, re.M))
         crit(f"{sc['reboot'] + 1} boots of the same VM", boots == sc["reboot"] + 1, f"{boots} boot banners seen")
         crit("reboot cycles reported PASS", any(t[0] == "reboot" and t[1] == "cycles" and t[2] == "PASS" for t in tests), "")
@@ -454,7 +475,7 @@ def main():
         if sc is None:
             nottested.append((n, why))
         else:
-            runs.append((n, sc, accel, args.smp, args.memory))
+            runs.append((n, sc, accel, sc.get("smp", args.smp), args.memory))
             for note in sc["notes"]:
                 nottested.append((f"{n}/{note.split(':')[0]}", note.split(": ", 1)[1] if ": " in note else note))
     if args.matrix != "none":

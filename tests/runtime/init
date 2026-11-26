@@ -25,6 +25,8 @@ SUITE=init
 
 # reboot-cycle scenario: a counter on a scratch disk survives warm reboots
 if [ -x /tests/reboot-cycle ]; then /tests/reboot-cycle; fi
+# panic-recovery scenario: boot 1 crashes the kernel on purpose, boot 2 continues here
+if [ -x /tests/panic-cycle ]; then /tests/panic-cycle; fi
 
 SUITES=$(cmdline_get xlin.suites | tr ',' ' ')
 echo "XLIN-RUNTIME: BEGIN pid=$$ uptime=$(cut -d' ' -f1 /proc/uptime) release=$(uname -r) suites=$SUITES"

@@ -106,6 +106,7 @@ fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+if [ "$runtime" = 1 ]; then gcc -O1 -Wall -static -o "$tmp/coretest" "$ROOT/tests/runtime/coretest.c" || xlin_die "could not compile tests/runtime/coretest.c"; fi
 gcc -O1 -o "$tmp/gen_init_cpio" "$src/usr/gen_init_cpio.c" || xlin_die "could not compile gen_init_cpio from the pinned source"
 
 {
@@ -124,9 +125,10 @@ gcc -O1 -o "$tmp/gen_init_cpio" "$src/usr/gen_init_cpio.c" || xlin_die "could no
 	echo "file /bin/xlin-pass $ROOT/tests/boot/xlin-pass 0755 0 0"
 	if [ "$runtime" = 1 ]; then
 		for f in lib.sh probes.sh probes.tsv dmesg-allowlist.txt known-findings.txt; do echo "file /tests/$f $ROOT/tests/runtime/$f 0644 0 0"; done
-		for f in udhcpc.script reboot-cycle; do echo "file /tests/$f $ROOT/tests/runtime/$f 0755 0 0"; done
+		for f in udhcpc.script reboot-cycle panic-cycle; do echo "file /tests/$f $ROOT/tests/runtime/$f 0755 0 0"; done
 		for f in "$ROOT"/tests/runtime/suites/*.sh; do echo "file /tests/suites/${f##*/} $f 0644 0 0"; done
 	fi
+	if [ "$runtime" = 1 ]; then echo "file /tests/coretest $tmp/coretest 0755 0 0"; fi
 	if [ -n "$kmod" ]; then
 		echo "file /bin/kmod $kmod 0755 0 0"
 		for a in modprobe insmod rmmod lsmod depmod modinfo; do echo "slink /bin/$a kmod 0777 0 0"; done
