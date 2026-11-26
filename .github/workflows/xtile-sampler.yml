@@ -1,0 +1,152 @@
+# Research, non-gating (lives on research/xtile-cpuid only, never in PR #5). Uses tests/research/xtile/*.
+#
+# Goal: find a runner whose OWN CPUID has AMX-TILE set and a max basic leaf below 0x1d, and on such a runner directly verify
+#   host CPUID (native + KVM-offered), guest CPUID (max leaf, AMX-TILE, leaf 0x1d) and the guest kernel's XTILE check result,
+#   for three kernels, with a level=0x1d control. A verdict file states what was and was not observed.
+# Non-hit runners cost ~1 minute: only the native probe runs, then the job ends with a one-line record.
+name: XTILE-CPUID sampler
+
+on:
+  push:
+    branches: [research/xtile-cpuid]
+    paths: ['.github/workflows/xtile-sampler.yml']
+  workflow_dispatch:      # only usable once the file is on the default branch
+    inputs:
+      xlin_build_run_id: {description: "Kernel build run with artifact xlin-kernel-build (pinned Xlin kernel)", required: false, default: "45369210790"}
+      kernels_run_id:    {description: "W^X newer-kernel research run with artifacts wx-kernel-stable / wx-kernel-mainline", required: false, default: "45415218265"}
+
+permissions:
+  contents: read
+  actions: read   # download artifacts from earlier runs
+
+jobs:
+  sample:
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+
+      - name: Native CPUID probe of the runner (host level 1) and KVM-offered CPUID (host level 2)
+        id: cond
+        run: |
+          set -u
+          mkdir -p out
+          gcc -O1 -Wall -static -o out/xtile-probe tests/research/xtile/xtile-probe.c
+          { grep -m1 'model name' /proc/cpuinfo; out/xtile-probe cpuid; out/xtile-probe kvm; } >out/runner-probe.txt 2>&1 || true
+          model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//')
+          leaf=$(grep -m1 -o 'max_basic_leaf=0x[0-9a-f]*' out/runner-probe.txt | cut -d= -f2)
+          amx=$(grep -m1 -o 'amx_tile=[01]' out/runner-probe.txt | cut -d= -f2)
+          hit=false
+          if [ "${amx:-0}" = 1 ] && [ -n "${leaf:-}" ] && [ $((leaf)) -lt $((0x1d)) ]; then hit=true; fi
+          echo "hit=$hit" >>"$GITHUB_OUTPUT"
+          echo "SAMPLE n=${{ matrix.n }} model='$model' max_leaf=${leaf:-?} amx_tile=${amx:-?} HIT=$hit" | tee out/sample.txt | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$hit" = true ]; then { echo '```'; cat out/runner-probe.txt; echo '```'; } >>"$GITHUB_STEP_SUMMARY"; fi
+
+      # ---------------- everything below runs ONLY on a HIT ----------------
+      - name: HIT, install QEMU, OVMF, busybox-static, zstd
+        if: steps.cond.outputs.hit == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf busybox-static zstd file
+          qemu-system-x86_64 --version | head -n1 | tee out/qemu-version.txt
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules; sudo udevadm trigger --name-match=kvm
+          fi
+          test -c /dev/kvm   # a HIT without KVM cannot be verified: fail loudly instead of guessing
+
+      - name: HIT, download kernels (pinned Xlin, vanilla stable, vanilla mainline)
+        if: steps.cond.outputs.hit == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: xlin-kernel-build
+          path: k/pinned
+          run-id: ${{ inputs.xlin_build_run_id || '45369210790' }}
+          github-token: ${{ github.token }}
+      - if: steps.cond.outputs.hit == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: wx-kernel-stable
+          path: k/stable
+          run-id: ${{ inputs.kernels_run_id || '45415218265' }}
+          github-token: ${{ github.token }}
+      - if: steps.cond.outputs.hit == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: wx-kernel-mainline
+          path: k/mainline
+          run-id: ${{ inputs.kernels_run_id || '45415218265' }}
+          github-token: ${{ github.token }}
+
+      - name: HIT, build the research initramfs (fetches the pinned tree only for usr/gen_init_cpio.c)
+        if: steps.cond.outputs.hit == 'true'
+        run: |
+          set -eu
+          ./scripts/xlin-fetch 2>&1 | tail -n 3
+          bash tests/research/xtile/build-initramfs.sh out/xtile-initramfs.cpio.zst | tee out/initramfs-hashes.txt
+
+      - name: "HIT, guests (host level 3 and the kernel check result). Plain -cpu host: 3 boots per kernel; control level=0x1d"
+        if: steps.cond.outputs.hit == 'true'
+        run: |
+          set -u
+          b=tests/research/xtile/boot.sh; i=out/xtile-initramfs.cpio.zst
+          for k in pinned stable mainline; do
+            kernel=$(find k/$k -name bzImage | head -n1)
+            [ -n "$kernel" ] || { echo "no bzImage for $k"; exit 1; }
+            # label host-<kernel>: -cpu host, nothing forced; the guest inherits the runner's max leaf
+            bash $b out/guests "host-$k" "$kernel" $i kvm host 3
+          done
+          kernel=$(find k/pinned -name bzImage | head -n1)
+          # control: same guest, max leaf raised to 0x1d: the check must NOT fire
+          bash $b out/guests "level1d-pinned" "$kernel" $i kvm 'host,level=0x1d' 2
+          # positive control: max leaf forced to 0x1c: the check must fire (the mechanism of research runs 45614681593..45618759770)
+          bash $b out/guests "level1c-pinned" "$kernel" $i kvm 'host,level=0x1c' 2
+
+      - name: HIT, verdict (R1/R2 host, G1 guest CPUID, G2 kernel check, G3 control)
+        if: steps.cond.outputs.hit == 'true'
+        run: |
+          python3 -I tests/research/xtile/verdict.py out | tee -a "$GITHUB_STEP_SUMMARY" | tee out/verdict-print.txt
+          python3 -I tests/research/xtile/summarize.py out/guests | tee -a "$GITHUB_STEP_SUMMARY" >out/guests-table.md
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xtile-sampler-${{ matrix.n }}
+          path: |
+            out/sample.txt
+            out/runner-probe.txt
+            out/verdict.txt
+            out/guests-table.md
+            out/qemu-version.txt
+            out/initramfs-hashes.txt
+            out/guests/*/serial.log
+            out/guests/*/qemu-command.txt
+            out/guests/*/meta.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+  collect:
+    needs: sample
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: xtile-sampler-*
+          path: all
+      - name: Table of all samples and any verdicts
+        run: |
+          {
+            echo "### Samples"; echo '```'
+            cat all/*/sample.txt 2>/dev/null | sort -V
+            echo '```'
+            echo "- samples: $(cat all/*/sample.txt 2>/dev/null | wc -l); HITs: $(grep -l 'HIT=true' all/*/sample.txt 2>/dev/null | wc -l)"
+            for v in all/*/verdict.txt; do [ -f "$v" ] && { echo "#### $v"; echo '```'; cat "$v"; echo '```'; }; done
+          } | tee summary.md >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: {name: xtile-sampler-summary, path: summary.md, retention-days: 30}
