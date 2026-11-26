@@ -250,7 +250,13 @@ static int timer(void)
 	while (itimer_ok && interval_clock_ok && alrm_count < 10) {
 		long long elapsed = ms_since(&t0);
 		if (elapsed < 0 || elapsed >= 2000) break;
-		pause();
+		/* Poll with a bounded sleep: pause() could wait forever if a broken timer
+		 * delivered one signal and then stopped. EINTR simply starts the next check. */
+		struct timespec poll = {0, 10 * 1000000L}, rem;
+		if (nanosleep(&poll, &rem) != 0 && errno != EINTR) {
+			interval_clock_ok = 0;
+			break;
+		}
 	}
 	struct itimerval off = {{0, 0}, {0, 0}};
 	int timer_stop_ok = setitimer(ITIMER_REAL, &off, NULL) == 0;
