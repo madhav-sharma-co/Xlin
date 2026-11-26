@@ -63,8 +63,6 @@ static long meminfo_kb(const char *key)
 
 static int mm(void)
 {
-	/* direct accounting test first: the kernel's AnonPages counter must follow a 64 MiB mapping up
-	 * (by at least 60 MiB) and back down (to within 4 MiB of where it was) */
 	/* /proc/meminfo is system-wide and can change because of unrelated activity; report it as
 	 * context, not as a brittle pass/fail threshold for this process's mapping. */
 	long a0 = meminfo_kb("AnonPages");
@@ -116,7 +114,11 @@ static int mm(void)
 	got_segv = 0;
 	if (sa_ok && prot_read_ok && !sigsetjmp(jb, 1)) p[0] = 2;
 	CHECK("prot-read-blocks-write", sa_ok && prot_read_ok && got_segv == 1, "write to a PROT_READ page raised SIGSEGV");
-	if (mprotect(p, pg, PROT_READ | PROT_WRITE) != 0) rep("mprotect-restore", "FAIL", "could not restore read/write permissions (errno %d)", errno);
+	if (mprotect(p, pg, PROT_READ | PROT_WRITE) != 0) {
+		rep("mprotect-restore", "FAIL", "could not restore read/write permissions (errno %d)", errno);
+		if (sa_ok) sigaction(SIGSEGV, &old_sa, NULL);
+		return 1;
+	}
 	if (sa_ok) sigaction(SIGSEGV, &old_sa, NULL);
 
 	/* NULL page is not mappable without privilege rules: mmap_min_addr */
