@@ -170,11 +170,28 @@ static int mm(void)
 	if (r == 0) { rep("mlock", "PASS", "16 pages locked"); munlock(p, pg * 16); }
 	else rep("mlock", "SKIP", "mlock failed errno %d (RLIMIT_MEMLOCK)", errno);
 
-	/* brk/sbrk */
-	void *b0 = sbrk(0), *b1 = sbrk(pg * 32);
-	CHECK("brk-grow", b1 == b0 && sbrk(0) == (char *)b0 + pg * 32, "heap grew by 32 pages");
-	void *b2 = sbrk(-(long)(pg * 32));
-	CHECK("brk-shrink", b2 != (void *)-1 && sbrk(0) == b0, "heap returned to its original break");
+	/* brk/sbrk: never do pointer arithmetic on the failure sentinel, and only shrink
+	 * a break that was successfully grown. */
+	void *b0 = sbrk(0);
+	if (b0 == (void *)-1) {
+		rep("brk-grow", "FAIL", "sbrk(0) could not read the initial program break (errno %d)", errno);
+		rep("brk-shrink", "SKIP", "initial program break was unavailable");
+	} else {
+		long grow = pg * 32;
+		void *b1 = sbrk(grow);
+		void *bnow = b1 == (void *)-1 ? (void *)-1 : sbrk(0);
+		CHECK("brk-grow", b1 == b0 && bnow != (void *)-1 && bnow == (char *)b0 + grow,
+		      "heap grew by 32 pages (sbrk=%s, query=%s)", b1 == (void *)-1 ? "failed" : "ok", bnow == (void *)-1 ? "failed" : "ok");
+		if (b1 == (void *)-1) {
+			rep("brk-shrink", "SKIP", "heap growth failed; no break to restore");
+		} else {
+			void *b2 = sbrk(-grow);
+			void *bafter = b2 == (void *)-1 ? (void *)-1 : sbrk(0);
+			CHECK("brk-shrink", b2 != (void *)-1 && bafter == b0,
+			      "heap returned to its original break (sbrk=%s, query=%s)",
+			      b2 == (void *)-1 ? "failed" : "ok", bafter == (void *)-1 ? "failed" : "ok");
+		}
+	}
 
 	/* transparent huge pages are reported, not required */
 	FILE *f = fopen("/sys/kernel/mm/transparent_hugepage/enabled", "r");
