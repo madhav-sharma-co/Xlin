@@ -46,7 +46,7 @@ static void alrm_h(int s) { (void)s; alrm_count++; }
 static long long ms_since(const struct timespec *a)
 {
 	struct timespec b;
-	clock_gettime(CLOCK_MONOTONIC, &b);
+	if (clock_gettime(CLOCK_MONOTONIC, &b) != 0) return -1;
 	return (b.tv_sec - a->tv_sec) * 1000LL + (b.tv_nsec - a->tv_nsec) / 1000000;
 }
 
@@ -185,46 +185,56 @@ static int mm(void)
 
 static int timer(void)
 {
-	struct timespec res, a, b, t0;
-	clock_getres(CLOCK_MONOTONIC, &res);
-	CHECK("clock-resolution", res.tv_sec == 0 && res.tv_nsec <= 1000000, "CLOCK_MONOTONIC resolution %ld ns (<= 1 ms)", res.tv_nsec);
+	struct timespec res = {0}, a = {0}, b = {0}, t0 = {0};
+	int res_ok = clock_getres(CLOCK_MONOTONIC, &res) == 0;
+	CHECK("clock-resolution", res_ok && res.tv_sec == 0 && res.tv_nsec <= 1000000,
+	      "CLOCK_MONOTONIC resolution %ld ns (<= 1 ms, syscall_ok=%d)", res.tv_nsec, res_ok);
 
 	/* monotonic never goes back over many calls */
 	long long bad = 0;
-	clock_gettime(CLOCK_MONOTONIC, &a);
-	for (int i = 0; i < 2000000; i++) {
-		clock_gettime(CLOCK_MONOTONIC, &b);
+	int clock_ok = clock_gettime(CLOCK_MONOTONIC, &a) == 0;
+	for (int i = 0; clock_ok && i < 2000000; i++) {
+		if (clock_gettime(CLOCK_MONOTONIC, &b) != 0) { clock_ok = 0; break; }
 		if (b.tv_sec < a.tv_sec || (b.tv_sec == a.tv_sec && b.tv_nsec < a.tv_nsec)) bad++;
 		a = b;
 	}
-	CHECK("monotonic", bad == 0, "2,000,000 reads, %lld went backwards", bad);
+	CHECK("monotonic", clock_ok && bad == 0, "2,000,000 reads, %lld went backwards (syscalls_ok=%d)", bad, clock_ok);
 
 	/* sleeps never return early and are not wildly late */
 	int early = 0, late = 0;
 	long long worst = 0;
+	int sleep_ok = 1;
 	for (int i = 0; i < 10; i++) {
-		clock_gettime(CLOCK_MONOTONIC, &t0);
-		struct timespec rq = {0, 50 * 1000000L};
-		nanosleep(&rq, NULL);
+		if (clock_gettime(CLOCK_MONOTONIC, &t0) != 0) { sleep_ok = 0; break; }
+		struct timespec rq = {0, 50 * 1000000L}, rem;
+		while (nanosleep(&rq, &rem) != 0) {
+			if (errno != EINTR) { sleep_ok = 0; break; }
+			rq = rem;
+		}
+		if (!sleep_ok) break;
 		long long e = ms_since(&t0);
+		if (e < 0) { sleep_ok = 0; break; }
 		if (e < 50) early++;
 		if (e > 50 + 250) late++;
 		if (e > worst) worst = e;
 	}
-	CHECK("nanosleep-50ms", early == 0 && late == 0, "10 sleeps of 50 ms: %d early, %d later than +250 ms, longest %lld ms", early, late, worst);
+	CHECK("nanosleep-50ms", sleep_ok && early == 0 && late == 0,
+	      "10 sleeps of 50 ms: %d early, %d later than +250 ms, longest %lld ms (syscalls_ok=%d)", early, late, worst, sleep_ok);
 
 	/* periodic timerfd: 20 ticks of 10 ms take about 200 ms */
 	int tf = timerfd_create(CLOCK_MONOTONIC, 0);
 	struct itimerspec its = {{0, 10 * 1000000L}, {0, 10 * 1000000L}};
 	int timer_ok = tf >= 0 && timerfd_settime(tf, 0, &its, NULL) == 0;
 	unsigned long long total = 0, x;
-	clock_gettime(CLOCK_MONOTONIC, &t0);
+	int timer_clock_ok = clock_gettime(CLOCK_MONOTONIC, &t0) == 0;
+	timer_ok = timer_ok && timer_clock_ok;
 	while (timer_ok && total < 20) {
 		ssize_t nr = read(tf, &x, sizeof x);
+		if (nr < 0 && errno == EINTR) continue;
 		if (nr != (ssize_t)sizeof x) { timer_ok = 0; break; }
 		total += x;
 	}
-	long long el = ms_since(&t0);
+	long long el = timer_clock_ok ? ms_since(&t0) : -1;
 	CHECK("timerfd-periodic", timer_ok && total >= 20 && el >= 190 && el < 190 + 400,
 	      "20 expirations of a 10 ms timer in %lld ms (ticks=%llu)", el, total);
 	if (tf >= 0) close(tf);
