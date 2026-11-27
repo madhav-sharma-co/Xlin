@@ -1,6 +1,9 @@
 #!/bin/busybox sh
 /bin/busybox mount -t proc proc /proc; /bin/busybox mount -t sysfs sys /sys; /bin/busybox mount -t devtmpfs dev /dev 2>/dev/null
 /bin/busybox mount -t tmpfs tmpfs /tmp
+# dynamically linked programs: the loader and libraries were copied under /payload/lib
+ln -s /payload/lib/lib64 /lib64 2>/dev/null; ln -s /payload/lib/lib /lib 2>/dev/null
+export LD_LIBRARY_PATH=/lib/x86_64-linux-gnu:/lib64
 echo "XLIN-KSELFTEST: kernel $(uname -r) cpus=$(grep -c ^processor /proc/cpuinfo)"
 # one line per program in kselftest-list.txt ("target:program"); exit 0 = pass, 4 = skip (KSFT_SKIP), anything else = fail
 limit=${XLIN_KSELFTEST_LIMIT:-240}

@@ -626,7 +626,7 @@ jobs:
           # 2. a real root filesystem on a virtio disk (the XlinOS workflow): BusyBox ext4 image, root=/dev/vda
           r=build/pkg/rootfs; mkdir -p $r/sbin $r/bin $r/proc $r/sys $r/dev $r/tmp
           cp "$(command -v busybox)" $r/bin/busybox
-          for a in $(busybox --list); do ln -sf busybox $r/bin/$a; done
+          for a in $(busybox --list); do [ "$a" = busybox ] || ln -sf busybox $r/bin/$a; done
           cat >$r/sbin/init <<'INIT'
           #!/bin/busybox sh
           /bin/busybox mount -t proc proc /proc; /bin/busybox mount -t sysfs sys /sys; /bin/busybox mount -t devtmpfs dev /dev 2>/dev/null
@@ -697,9 +697,10 @@ jobs:
             --no-enforce-modules --smp 4 --memory 2048 --append "loglevel=4" 2>&1 | tee build/kselftest/run/serial.log || true
           grep -a '^XLIN-KSELFTEST' build/kselftest/run/serial.log | tr -d '\r' >build/kselftest/run/results.txt || true
           grep -q 'XLIN-KSELFTEST: done' build/kselftest/run/results.txt
-      - name: Result table
+      - name: Result table (fails when a result differs from tests/kselftest/expected.txt)
         if: always()
         run: |
+          set -o pipefail
           python3 tests/kselftest/report.py build/kselftest/run/results.txt build/kselftest/not-built.txt tests/kselftest/expected.txt | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
