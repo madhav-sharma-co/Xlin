@@ -18,6 +18,7 @@ libs=$out/libs.list; : >"$libs"
 for t in "$@"; do
 	if ! make -k -C "$st" O="$out/obj" TARGETS="$t" -j"$(nproc)" >"$out/logs/build-$t.log" 2>&1; then
 		echo "$t: some programs failed to build (see logs/build-$t.log)" >>"$out/not-built.txt"
+		grep -E 'error|Error|fatal' "$out/logs/build-$t.log" | head -n 6 | sed "s/^/    [$t] /"
 	fi
 	inst=$out/install-$t
 	make -k -C "$st" O="$out/obj" TARGETS="$t" INSTALL_PATH="$inst" install >"$out/logs/install-$t.log" 2>&1 || true
@@ -26,14 +27,16 @@ for t in "$@"; do
 	[ -d "$inst/$t" ] && cp -a "$inst/$t/." "$d/"
 	: >"$d/list"
 	# programs to run: the install's list entries for this target that are ELF executables
+	[ -f "$inst/kselftest-list.txt" ] || { echo "$t: no install list (build failed before install)" >>"$out/not-built.txt"; continue; }
 	while IFS=: read -r tt prog; do
 		[ "$tt" = "$t" ] || continue
 		prog=${prog# }
-		if [ -x "$d/$prog" ] && head -c4 "$d/$prog" | grep -q 'ELF'; then
+		first=$(head -n1 "$d/$prog" 2>/dev/null | tr -d '\r')
+		if [ -x "$d/$prog" ] && { head -c4 "$d/$prog" | grep -q 'ELF' || [ "$first" = '#!/bin/sh' ]; }; then
 			echo "$prog" >>"$d/list"
 			ldd "$d/$prog" 2>/dev/null | awk '/=>/ {print $3} /^[ \t]*\// {print $1}' >>"$libs"
 		else
-			echo "$t:$prog: not an ELF program here (shell/python test or not built); not run" >>"$out/not-built.txt"
+			echo "$t:$prog: not an ELF program or a /bin/sh script here (bash/python test, or not built); not run" >>"$out/not-built.txt"
 		fi
 	done <"$inst/kselftest-list.txt"
 	echo "$t: $(wc -l <"$d/list") programs to run"

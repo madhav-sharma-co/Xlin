@@ -32,6 +32,7 @@ for f in bzImage System.map config-final build-report.env; do [ -s "$report/$f" 
 renv() { sed -n "s/^$1=//p" "$report/build-report.env" | head -n1; }
 rel=$(renv kernel_release); [ -n "$rel" ] || die "no kernel_release in build-report.env"
 mods=("$report"/modules-*.tar.zst); [ -s "${mods[0]}" ] || die "modules tarball missing"
+out=$(realpath -m "$out"); report=$(realpath "$report"); [ -z "$initrd" ] || initrd=$(realpath "$initrd")
 [ ! -e "$out" ] || die "$out exists"
 name=${name:-xlin-$rel}
 d="$out/$name"; mkdir -p "$d"

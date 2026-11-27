@@ -10,7 +10,7 @@ bb=$(command -v busybox) || { echo "busybox-static not installed" >&2; exit 3; }
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 mkdir -p "$t/bin" "$t/sbin" "$t/proc" "$t/sys" "$t/dev" "$t/tmp" "$t/payload" "$t/root"
 cp "$bb" "$t/bin/busybox"
-for a in $("$bb" --list); do ln -sf busybox "$t/bin/$a"; done
+for a in $("$bb" --list); do [ "$a" = busybox ] || ln -sf busybox "$t/bin/$a"; done   # never replace the binary itself by a link to itself
 cp "$init" "$t/init"; chmod +x "$t/init"
 cp -a "$payload/." "$t/payload/"
 ( cd "$t" && find . | sort | cpio -o -H newc -R 0:0 --quiet ) | zstd -q -19 -o "$out"

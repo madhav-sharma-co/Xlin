@@ -765,7 +765,7 @@ jobs:
             for k in xlin arch; do
               img=artifact/report/bzImage; [ $k = arch ] && img=archk/vmlinuz
               timeout 300 ./scripts/xlin-run --kernel "$img" --initramfs build/perf/initramfs.cpio.zst --no-enforce-modules \
-                --smp 2 --memory 1024 --append "loglevel=3 mitigations=auto" 2>&1 | tee build/perf/logs/$k-$round.log || true
+                --smp 2 --memory 1024 --append "loglevel=4 mitigations=auto" 2>&1 | tee build/perf/logs/$k-$round.log || true
             done
           done
       - name: Medians
