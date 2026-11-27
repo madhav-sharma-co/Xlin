@@ -49,10 +49,13 @@ for t in "$@"; do
 done
 # libgcc_s is loaded with dlopen by pthread_cancel and does not show up in ldd
 gcc -print-file-name=libgcc_s.so.1 >>"$libs"
+mkdir -p "$out/payload/lib/flat" "$out/payload/lib/lib64"
 sort -u "$libs" | while read -r l; do
 	[ -f "$l" ] || continue
-	mkdir -p "$out/payload/lib/$(dirname "$l" | sed 's#^/##')"
-	cp -L "$l" "$out/payload/lib/${l#/}"
+	case $(basename "$l") in
+	ld-linux*) cp -L "$l" "$out/payload/lib/lib64/$(basename "$l")" ;;
+	*) cp -L "$l" "$out/payload/lib/flat/$(basename "$l")" ;;
+	esac
 done
-# the dynamic loader must be at its absolute path in the guest: /lib64 -> /payload/lib/lib64 (symlinked in init)
+# in the guest: /lib64 -> /payload/lib/lib64 (the loader) and LD_LIBRARY_PATH=/payload/lib/flat (set in init)
 echo "not built / not run: $(wc -l <"$out/not-built.txt") entries (see not-built.txt)"

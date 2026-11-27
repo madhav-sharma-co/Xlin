@@ -2,8 +2,8 @@
 /bin/busybox mount -t proc proc /proc; /bin/busybox mount -t sysfs sys /sys; /bin/busybox mount -t devtmpfs dev /dev 2>/dev/null
 /bin/busybox mount -t tmpfs tmpfs /tmp; mkdir -p /dev/shm; /bin/busybox mount -t tmpfs tmpfs /dev/shm
 # dynamically linked programs: the loader and libraries were copied under /payload/lib
-ln -s /payload/lib/lib64 /lib64 2>/dev/null; ln -s /payload/lib/lib /lib 2>/dev/null
-export LD_LIBRARY_PATH=/lib/x86_64-linux-gnu:/lib64
+ln -s /payload/lib/lib64 /lib64 2>/dev/null
+export LD_LIBRARY_PATH=/payload/lib/flat
 echo "XLIN-KSELFTEST: kernel $(uname -r) cpus=$(grep -c ^processor /proc/cpuinfo)"
 # one line per program in kselftest-list.txt ("target:program"); exit 0 = pass, 4 = skip (KSFT_SKIP), anything else = fail
 limit=${XLIN_KSELFTEST_LIMIT:-240}
@@ -19,7 +19,7 @@ for t in $(ls /payload/kselftest); do
 		rc=$?
 		case $rc in 0) r=PASS ;; 4) r=SKIP ;; 124 | 137) r=TIMEOUT ;; *) r=FAIL ;; esac
 		echo "XLIN-KSELFTEST: $t/$prog $r rc=$rc"
-		if [ "$r" != PASS ]; then tail -n 6 /tmp/out | sed 's/^/XLIN-KSELFTEST-LOG: /'; fi
+		if [ "$r" != PASS ]; then grep -E 'FAIL|not ok|rror|Could not|cannot|Totals|device not found' /tmp/out | tail -n 12 | sed 's/^/XLIN-KSELFTEST-LOG: /'; fi
 	done <"$d/list"
 done
 echo "XLIN-KSELFTEST: done"
