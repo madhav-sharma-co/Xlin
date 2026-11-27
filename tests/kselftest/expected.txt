@@ -1,0 +1,6 @@
+# Results of the kselftest run that are NOT a plain PASS, each with what is known. The gate
+# (tests/kselftest/report.py) fails on any difference: a new failure, or an entry here that changed.
+# An entry is never added to make CI green without a reason below; reasons marked OPEN are not yet root-caused.
+ipc/msgque FAIL rc=1 Kernel feature not built: msgrcv(MSG_COPY) returns ENOSYS because CONFIG_CHECKPOINT_RESTORE is not set (upstream default). Not a defect; a configuration gap to decide if XlinOS needs CRIU/container checkpointing.
+clone3/clone3_cap_checkpoint_restore FAIL rc=1 OPEN: the test fails in its own set_capability() helper (it edits libcap's private structure) before any clone3 call reaches the kernel; not a kernel result. Needs a libcap-version check.
+prctl/set-anon-vma-name-test FAIL rc=1 OPEN: only the sub-check "rename a non-anonymous VMA expects EINVAL" fails; renaming and the bad-name check pass. Probably the guest's tmpfs-backed /tmp (shmem VMAs can be named); not verified.

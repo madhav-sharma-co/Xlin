@@ -1,6 +1,6 @@
 #!/bin/busybox sh
 /bin/busybox mount -t proc proc /proc; /bin/busybox mount -t sysfs sys /sys; /bin/busybox mount -t devtmpfs dev /dev 2>/dev/null
-/bin/busybox mount -t tmpfs tmpfs /tmp
+/bin/busybox mount -t tmpfs tmpfs /tmp; mkdir -p /dev/shm; /bin/busybox mount -t tmpfs tmpfs /dev/shm
 # dynamically linked programs: the loader and libraries were copied under /payload/lib
 ln -s /payload/lib/lib64 /lib64 2>/dev/null; ln -s /payload/lib/lib /lib 2>/dev/null
 export LD_LIBRARY_PATH=/lib/x86_64-linux-gnu:/lib64
@@ -13,6 +13,8 @@ for t in $(ls /payload/kselftest); do
 	while read -r prog; do
 		[ -n "$prog" ] || continue
 		cd "$d" || continue
+		# what tools/testing/selftests/rseq/run_*.sh set: glibc must not register rseq itself
+		case $t in rseq) export GLIBC_TUNABLES=glibc.pthread.rseq=0 ;; *) unset GLIBC_TUNABLES ;; esac
 		timeout "$limit" "./$prog" >/tmp/out 2>&1
 		rc=$?
 		case $rc in 0) r=PASS ;; 4) r=SKIP ;; 124 | 137) r=TIMEOUT ;; *) r=FAIL ;; esac

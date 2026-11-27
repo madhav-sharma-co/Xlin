@@ -39,8 +39,15 @@ for t in "$@"; do
 			echo "$t:$prog: not an ELF program or a /bin/sh script here (bash/python test, or not built); not run" >>"$out/not-built.txt"
 		fi
 	done <"$inst/kselftest-list.txt"
+	# helper programs started by the tests (not listed themselves) need their libraries too
+	for f in "$d"/*; do
+		[ -f "$f" ] && [ -x "$f" ] && head -c4 "$f" | grep -q 'ELF' || continue
+		ldd "$f" 2>/dev/null | awk '/=>/ {print $3} /^[ \t]*\// {print $1}' >>"$libs"
+	done
 	echo "$t: $(wc -l <"$d/list") programs to run"
 done
+# libgcc_s is loaded with dlopen by pthread_cancel and does not show up in ldd
+gcc -print-file-name=libgcc_s.so.1 >>"$libs"
 sort -u "$libs" | while read -r l; do
 	[ -f "$l" ] || continue
 	mkdir -p "$out/payload/lib/$(dirname "$l" | sed 's#^/##')"
