@@ -41,7 +41,8 @@ for t in "$@"; do
 	done <"$inst/kselftest-list.txt"
 	# helper programs started by the tests (not listed themselves) need their libraries too
 	for f in "$d"/*; do
-		[ -f "$f" ] && [ -x "$f" ] && head -c4 "$f" | grep -q 'ELF' || continue
+		[ -f "$f" ] || continue
+		head -c4 "$f" | grep -q 'ELF' || continue
 		ldd "$f" 2>/dev/null | awk '/=>/ {print $3} /^[ \t]*\// {print $1}' >>"$libs"
 	done
 	echo "$t: $(wc -l <"$d/list") programs to run"
