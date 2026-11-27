@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Xlin Run: boot an Xlin Kernel in QEMU with OVMF (UEFI). For OS development on Xlin (XlinOS).
+# Works from a release package directory (xlin-package output) or from explicit files.
+set -euo pipefail
+
+usage() {
+	cat <<'USAGE'
+Usage: xlin-run [options] [-- extra kernel command-line words]
+
+Boot the Xlin Kernel in QEMU with OVMF. Serial console on this terminal (quit: Ctrl-A then X).
+
+Kernel and initramfs (default: the files next to this script, i.e. an unpacked release package):
+  --package DIR       release package directory (vmlinuz-xlin-*, initramfs-minimal.cpio.zst)
+  --kernel FILE       kernel image (bzImage / vmlinuz-xlin-*)
+  --initramfs FILE    initramfs (default: the minimal one from the package)
+  --no-initramfs      boot without any initramfs (needs --root; virtio-blk and ext4 are built in)
+Guest:
+  --disk FILE         attach a raw/qcow2 disk image as virtio-blk (repeatable); with
+                      --root DEV the kernel mounts it as the root filesystem
+  --root DEV          root=DEV on the kernel command line, e.g. /dev/vda
+  --rootfstype FS     rootfstype=FS (e.g. ext4)
+  --memory MiB        guest memory (default 2048)
+  --smp N             virtual CPUs (default 2)
+  --net               add a virtio-net NIC with user-mode networking
+  --ssh-port N        with --net, forward host port N to guest port 22
+  --graphic           show a window instead of using the serial console
+  --append "WORDS"    extra kernel command-line words
+Policy:
+  --no-enforce-modules  do not boot with module.sig_enforce=1 (default: only modules signed by
+                        the build's key can load; this is the tested secure default)
+  --accel kvm|tcg     force an accelerator (default: kvm if /dev/kvm is usable, else tcg)
+  --timeout SEC       kill the VM after SEC seconds (for scripts and CI)
+  --print             print the QEMU command and exit
+  -h, --help
+Environment: QEMU (default qemu-system-x86_64), OVMF_CODE and OVMF_VARS to override firmware.
+A reboot or a kernel panic ends the VM (QEMU -no-reboot, panic=-1).
+This boots a kernel in a VM. It does not test physical hardware.
+USAGE
+}
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+pkg="$here"; kernel=""; initrd=""; disks=(); root=""; rootfs=""; mem=2048; smp=2; net=0; ssh=""
+noinit=0; graphic=0; extra=""; enforce=1; accel=""; tmo=""; print=0
+while [ $# -gt 0 ]; do
+	case $1 in
+	--package) pkg=$2; shift 2 ;;
+	--kernel) kernel=$2; shift 2 ;;
+	--initramfs) initrd=$2; shift 2 ;;
+	--no-initramfs) noinit=1; shift ;;
+	--disk) disks+=("$2"); shift 2 ;;
+	--root) root=$2; shift 2 ;;
+	--rootfstype) rootfs=$2; shift 2 ;;
+	--memory) mem=$2; shift 2 ;;
+	--smp) smp=$2; shift 2 ;;
+	--net) net=1; shift ;;
+	--ssh-port) ssh=$2; shift 2 ;;
+	--graphic) graphic=1; shift ;;
+	--append) extra="$extra $2"; shift 2 ;;
+	--no-enforce-modules) enforce=0; shift ;;
+	--accel) accel=$2; shift 2 ;;
+	--timeout) tmo=$2; shift 2 ;;
+	--print) print=1; shift ;;
+	-h | --help) usage; exit 0 ;;
+	--) shift; extra="$extra $*"; break ;;
+	*) usage >&2; echo "error: unknown option $1" >&2; exit 2 ;;
+	esac
+done
+die() { echo "error: $*" >&2; exit 2; }
+if [ -z "$kernel" ]; then
+	for f in "$pkg"/vmlinuz-xlin-*; do [ -f "$f" ] && kernel=$f; done
+fi
+if [ -z "$kernel" ] || [ ! -f "$kernel" ]; then die "no kernel found (use --kernel or --package DIR)"; fi
+if [ "$noinit" = 0 ] && [ -z "$initrd" ] && [ -f "$pkg/initramfs-minimal.cpio.zst" ]; then initrd="$pkg/initramfs-minimal.cpio.zst"; fi
+[ -z "$initrd" ] || [ -f "$initrd" ] || die "initramfs $initrd not found"
+[ -n "$initrd" ] || [ -n "$root" ] || die "no initramfs and no --root: nothing to boot into"
+if ! [[ $mem =~ ^[1-9][0-9]*$ ]] || ! [[ $smp =~ ^[1-9][0-9]*$ ]]; then die "--memory and --smp must be positive integers"; fi
+
+qemu=${QEMU:-qemu-system-x86_64}
+command -v "$qemu" >/dev/null || die "$qemu not found (install qemu-system-x86)"
+code=${OVMF_CODE:-}; vars=${OVMF_VARS:-}
+if [ -z "$code" ]; then
+	for pair in /usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd /usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd \
+		/usr/share/edk2/x64/OVMF_CODE.4m.fd:/usr/share/edk2/x64/OVMF_VARS.4m.fd /usr/share/edk2/ovmf/OVMF_CODE.fd:/usr/share/edk2/ovmf/OVMF_VARS.fd \
+		/usr/share/edk2-ovmf/x64/OVMF_CODE.fd:/usr/share/edk2-ovmf/x64/OVMF_VARS.fd; do
+		if [ -f "${pair%%:*}" ] && [ -f "${pair##*:}" ]; then code=${pair%%:*}; vars=${pair##*:}; break; fi
+	done
+fi
+if [ ! -f "$code" ] || [ ! -f "$vars" ]; then die "OVMF not found (install ovmf / edk2-ovmf, or set OVMF_CODE and OVMF_VARS)"; fi
+work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+cp "$vars" "$work/OVMF_VARS.fd"   # the original variable store is never modified
+
+if [ -z "$accel" ]; then if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then accel=kvm; else accel=tcg; fi; fi
+cpu=max; [ "$accel" = kvm ] && cpu=host
+
+cmd="console=ttyS0,115200 panic=-1"
+[ "$graphic" = 1 ] && cmd="console=tty0 console=ttyS0,115200 panic=-1"
+[ -n "$initrd" ] && [ -z "$root" ] && cmd="$cmd rdinit=/init"
+[ -n "$root" ] && cmd="$cmd root=$root rw"
+[ -n "$rootfs" ] && cmd="$cmd rootfstype=$rootfs"
+[ "$enforce" = 1 ] && cmd="$cmd module.sig_enforce=1"
+cmd="$cmd$extra"
+
+args=(-machine "q35,accel=$accel" -cpu "$cpu" -smp "$smp" -m "$mem" -no-reboot
+	-drive "if=pflash,format=raw,unit=0,readonly=on,file=$code" -drive "if=pflash,format=raw,unit=1,file=$work/OVMF_VARS.fd"
+	-kernel "$kernel" -append "$cmd" -device virtio-rng-pci)
+[ -n "$initrd" ] && args+=(-initrd "$initrd")
+if [ "$graphic" = 1 ]; then args+=(-serial mon:stdio -vga std); else args+=(-nographic); fi
+i=0
+for d in "${disks[@]+"${disks[@]}"}"; do
+	[ -f "$d" ] || die "disk $d not found"
+	fmt=raw; case $d in *.qcow2) fmt=qcow2 ;; esac
+	args+=(-drive "if=none,id=d$i,file=$d,format=$fmt")
+	args+=(-device "virtio-blk-pci,drive=d$i"); i=$((i + 1))
+done
+if [ "$net" = 1 ]; then
+	nic="user,id=n0"; [ -n "$ssh" ] && nic="$nic,hostfwd=tcp::$ssh-:22"
+	args+=(-netdev "$nic" -device "virtio-net-pci,netdev=n0")
+fi
+
+if [ "$print" = 1 ]; then printf '%q ' "$qemu" "${args[@]}"; echo; exit 0; fi
+echo "xlin-run: kernel $(basename "$kernel"), accel=$accel, ${smp} CPU, ${mem} MiB, firmware $code" >&2
+echo "xlin-run: command line: $cmd" >&2
+if [ -n "$tmo" ]; then exec timeout --foreground "$tmo" "$qemu" "${args[@]}"; fi
+exec "$qemu" "${args[@]}"

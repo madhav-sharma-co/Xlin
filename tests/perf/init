@@ -1,0 +1,7 @@
+#!/bin/busybox sh
+/bin/busybox mount -t proc proc /proc; /bin/busybox mount -t sysfs sys /sys; /bin/busybox mount -t devtmpfs dev /dev 2>/dev/null
+/bin/busybox mount -t tmpfs tmpfs /tmp
+echo "XLIN-PERF: kernel $(uname -r) cpus=$(grep -c ^processor /proc/cpuinfo) uptime=$(cut -d' ' -f1 /proc/uptime)"
+for i in 1 2 3; do echo "XLIN-PERF: run $i"; /payload/xlin-bench; done
+echo "XLIN-PERF: done"
+echo o >/proc/sysrq-trigger 2>/dev/null; poweroff -f

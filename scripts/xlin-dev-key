@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Xlin Dev Key: create a DEVELOPMENT module-signing key (private key + certificate in one PEM)
+# in the same form the kernel build generates. It is for reproducibility checks and local
+# development only. It is not a release key: the production release key is created and kept
+# offline by the maintainer, never generated or stored by this repository or its CI.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+out=${1:-}
+case $out in "" | -h | --help) echo "Usage: scripts/xlin-dev-key OUTPUT.pem   (refuses to overwrite)"; exit 0 ;; esac
+[ ! -e "$out" ] || { echo "error: $out exists" >&2; exit 1; }
+src="${XLIN_SRC:-$ROOT/upstream/src/linux}"
+genkey="$src/certs/default_x509.genkey"
+[ -f "$genkey" ] || { echo "error: $genkey not found (run scripts/xlin-fetch first)" >&2; exit 3; }
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+sed 's/^CN *=.*/CN = Xlin development module signing key (not a release key)/' "$genkey" >"$tmp/x509.genkey"
+umask 077
+openssl req -new -nodes -utf8 -sha512 -days 36500 -batch -x509 -config "$tmp/x509.genkey" \
+	-outform PEM -out "$out" -keyout "$out" -newkey rsa:4096 2>/dev/null
+echo "created $out (development key; do not commit, do not release with it)"

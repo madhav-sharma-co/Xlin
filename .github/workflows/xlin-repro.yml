@@ -1,0 +1,101 @@
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Reproducible-build check: the pinned kernel is built TWICE, in two separate jobs on two fresh
+# runners, with the same fixed module-signing key, and the results are compared byte for byte.
+# The signing key here is a throw-away development key generated in this run and uploaded for the
+# second build; it is not a release key and is deleted with the run's artifacts.
+name: Reproducible build
+
+on:
+  pull_request:
+    paths: [scripts/xlin-build, scripts/xlin-dev-key, config/**, upstream/**, .github/workflows/xlin-repro.yml]
+  push:
+    branches: [main]
+    paths: [scripts/xlin-build, scripts/xlin-dev-key, config/**, upstream/**, .github/workflows/xlin-repro.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  key:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          set -eu
+          ./scripts/xlin-fetch
+          ./scripts/xlin-dev-key dev-signing-key.pem
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repro-dev-key
+          path: dev-signing-key.pem
+          retention-days: 1
+
+  build:
+    needs: key
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [a, b]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential flex bison bc libelf-dev libssl-dev zstd kmod file time
+      - run: |
+          ./scripts/xlin-fetch
+          ./scripts/xlin-verify --strict >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: repro-dev-key
+          path: key
+      - name: Build with the fixed key
+        run: |
+          set -o pipefail
+          ./scripts/xlin-build --out "$PWD/build/xlin-x86_64" --signing-key "$PWD/key/dev-signing-key.pem" 2>&1 | tee build-run.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repro-${{ matrix.n }}
+          path: |
+            build/xlin-x86_64/report/repro-manifest.txt
+            build/xlin-x86_64/report/repro-modules.txt
+            build/xlin-x86_64/report/build-report.env
+          retention-days: 30
+
+  compare:
+    needs: build
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: repro-a, path: a}
+      - uses: actions/download-artifact@v4
+        with: {name: repro-b, path: b}
+      - name: Compare the two builds byte for byte
+        run: |
+          set -u
+          fail=0
+          {
+            echo "### Reproducible build: build A vs build B (same pinned source, same fixed key, separate runners)"
+            echo
+            for f in repro-manifest.txt repro-modules.txt; do
+              if cmp -s "a/$f" "b/$f"; then echo "- \`$f\`: IDENTICAL ($(wc -l <"a/$f") hashes)"; else echo "- \`$f\`: **DIFFERENT**"; fail=1; fi
+            done
+            echo
+            echo '```'; cat a/repro-manifest.txt; echo '```'
+            if [ "$fail" -ne 0 ]; then echo; echo "Differences:"; echo '```'; diff a/repro-manifest.txt b/repro-manifest.txt | head -20; diff a/repro-modules.txt b/repro-modules.txt | head -20; echo '```'; fi
+            echo
+            echo "Compiler A: $(sed -n 's/^gcc=//p' a/build-report.env); B: $(sed -n 's/^gcc=//p' b/build-report.env)"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$fail"

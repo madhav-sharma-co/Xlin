@@ -570,3 +570,210 @@ jobs:
           x=$(find xlin -name results.json -path '*run-all*' | head -n1)
           a=$(find arch -name results.json | head -n1)
           python3 scripts/xlin-runtime-compare "$x" "Xlin Kernel" "$a" "Arch linux-lts" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  package:
+    # The release package for QEMU/OVMF development (XlinOS), assembled from THIS run's build and then
+    # verified the way a user would use it: unpack it fresh, check SHA256SUMS, boot it with the
+    # package's own xlin-run (minimal initramfs, and an ext4 root disk with root=/dev/vda).
+    # Not signed: the maintainer signs SHA256SUMS with the production key.
+    needs: [build, boot-test]
+    if: ${{ needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install QEMU, OVMF, BusyBox, e2fsprogs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf busybox-static zstd file e2fsprogs shellcheck
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+      - name: Xlin Fetch and Xlin Verify (pinned source, needed for gen_init_cpio)
+        run: |
+          ./scripts/xlin-fetch
+          ./scripts/xlin-verify --strict >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlin-kernel-build
+          path: artifact
+      - name: Build the minimal initramfs and the package
+        run: |
+          set -eu
+          ./scripts/xlin-initramfs --out build/pkg/initramfs-minimal.cpio.zst
+          ./scripts/xlin-package --report artifact/report --out build/pkg/dist --initramfs build/pkg/initramfs-minimal.cpio.zst
+      - name: Verify the package as a user would (fresh unpack, checksums, boot, ext4 root)
+        run: |
+          set -eu
+          mkdir -p build/pkg/unpacked
+          zstd -dc build/pkg/dist/xlin-*.tar.zst | tar -C build/pkg/unpacked -xf -
+          ( cd build/pkg/dist && sha256sum -c ./*.tar.zst.sha256 )
+          p=$(echo build/pkg/unpacked/xlin-*)
+          ( cd "$p" && sha256sum -c SHA256SUMS )
+          test -x "$p/xlin-run"
+          rel=$(sed -n 's/^xlin_kernel_release=//p' "$p/SOURCE-PIN.txt")
+          echo "package kernel release: $rel"
+          # 1. minimal initramfs through the package's own launcher, including module-signature enforcement on the command line
+          { sleep 100; echo 'echo XLIN-PKG-UNAME "$(uname -r)"; cat /proc/cmdline; poweroff -f'; } |
+            timeout 300 "$p/xlin-run" --package "$p" --smp 2 --memory 1024 2>&1 | tee build/pkg/boot-minimal.log || true
+          grep -q 'XLIN-BOOT-TEST: SHELL-READY failed=0' build/pkg/boot-minimal.log
+          grep -q "XLIN-PKG-UNAME $rel" build/pkg/boot-minimal.log
+          grep -q 'module.sig_enforce=1' build/pkg/boot-minimal.log
+          # 2. a real root filesystem on a virtio disk (the XlinOS workflow): BusyBox ext4 image, root=/dev/vda
+          r=build/pkg/rootfs; mkdir -p $r/sbin $r/bin $r/proc $r/sys $r/dev $r/tmp
+          cp "$(command -v busybox)" $r/bin/busybox
+          for a in $(busybox --list); do ln -sf busybox $r/bin/$a; done
+          cat >$r/sbin/init <<'INIT'
+          #!/bin/busybox sh
+          /bin/busybox mount -t proc proc /proc; /bin/busybox mount -t sysfs sys /sys; /bin/busybox mount -t devtmpfs dev /dev 2>/dev/null
+          echo "XLIN-ROOTFS-OK release=$(uname -r) root=$(sed -n 's/.* root=\([^ ]*\).*/\1/p' /proc/cmdline) cpus=$(grep -c ^processor /proc/cpuinfo)"
+          poweroff -f
+          INIT
+          chmod +x $r/sbin/init
+          mke2fs -q -t ext4 -d $r build/pkg/root.img 128M
+          timeout 300 "$p/xlin-run" --package "$p" --kernel "$p"/vmlinuz-xlin-"$rel" --no-initramfs --disk build/pkg/root.img --root /dev/vda --rootfstype ext4 --memory 1024 2>&1 | tee build/pkg/boot-rootfs.log || true
+          grep -q "XLIN-ROOTFS-OK release=$rel root=/dev/vda" build/pkg/boot-rootfs.log
+          { echo "### Release package verification"; echo "- fresh unpack, SHA256SUMS verified, package launcher boots the kernel (minimal initramfs) and an ext4 root disk"; echo '```'; cat "$p/SOURCE-PIN.txt"; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xlin-release-candidate
+          path: |
+            build/pkg/dist/*.tar.zst
+            build/pkg/dist/*.sha256
+            build/pkg/boot-*.log
+          retention-days: 30
+
+  kselftest:
+    # Upstream kselftests of the PINNED source, built out-of-tree (the source stays unmodified),
+    # run in the Xlin Kernel under QEMU. Results are listed program by program. Programs that cannot
+    # be built or are shell/python tests are listed as not run; nothing is hidden.
+    needs: build
+    if: ${{ needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install build and run dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential flex bison bc libelf-dev libssl-dev rsync pkg-config \
+            libcap-dev libcap-ng-dev libnuma-dev libmount-dev libfuse-dev libpopt-dev libasound2-dev libmnl-dev \
+            qemu-system-x86 ovmf busybox-static zstd cpio file shellcheck
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+      - name: Xlin Fetch and Xlin Verify
+        run: |
+          ./scripts/xlin-fetch
+          ./scripts/xlin-verify --strict >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlin-kernel-build
+          path: artifact
+      - name: Build the selftests (out of tree) and the initramfs
+        run: |
+          set -eu
+          shellcheck -x tests/kselftest/build.sh tests/kselftest/mk-initramfs.sh
+          sh -n tests/kselftest/init
+          tests/kselftest/build.sh "$PWD/upstream/src/linux" "$PWD/build/kselftest" $(cat tests/kselftest/targets.txt | grep -v '^#' | tr '\n' ' ')
+          cat build/kselftest/not-built.txt
+          ./scripts/xlin-verify --strict >/dev/null   # the pinned source must still be unmodified
+          tests/kselftest/mk-initramfs.sh build/kselftest/initramfs.cpio.zst tests/kselftest/init build/kselftest/payload
+      - name: Run the selftests in the Xlin Kernel
+        run: |
+          set -o pipefail
+          mkdir -p build/kselftest/run
+          # xlin-run needs a package layout; point it at the build's own files
+          timeout 5400 ./scripts/xlin-run --kernel artifact/report/bzImage --initramfs build/kselftest/initramfs.cpio.zst \
+            --no-enforce-modules --smp 4 --memory 2048 --append "loglevel=4" 2>&1 | tee build/kselftest/run/serial.log || true
+          grep -a '^XLIN-KSELFTEST' build/kselftest/run/serial.log | tr -d '\r' >build/kselftest/run/results.txt || true
+          grep -q 'XLIN-KSELFTEST: done' build/kselftest/run/results.txt
+      - name: Result table
+        if: always()
+        run: |
+          python3 tests/kselftest/report.py build/kselftest/run/results.txt build/kselftest/not-built.txt tests/kselftest/expected.txt | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xlin-kselftest
+          path: |
+            build/kselftest/run/
+            build/kselftest/not-built.txt
+            build/kselftest/logs/
+          retention-days: 30
+
+  perf:
+    # Basic performance baseline: micro-benchmarks run in the same VM configuration, on the same host,
+    # in the same job, for the Xlin Kernel and Arch linux-lts, interleaved three rounds. INFORMATIONAL: a
+    # shared CI runner is noisy and no threshold is enforced. These are not claims that Xlin is faster or slower.
+    needs: build
+    if: ${{ needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential qemu-system-x86 ovmf busybox-static zstd cpio
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+          {
+            echo "### Performance baseline: host"; echo '```'; grep -m1 'model name' /proc/cpuinfo; nproc; ls -l /dev/kvm || echo "no /dev/kvm: TCG, numbers are meaningless for comparison"; qemu-system-x86_64 --version | head -n1; echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Get the Arch linux-lts kernel image (only the vmlinuz is extracted; nothing is committed)
+        run: |
+          set -eu
+          mkdir -p archk
+          docker run --rm -v "$PWD/archk:/out" archlinux:latest sh -c '
+            pacman -Syu --noconfirm --noprogressbar >/dev/null &&
+            pacman -S --noconfirm --noprogressbar --needed linux-lts >/dev/null &&
+            rel=$(ls /usr/lib/modules | grep -- -lts | head -n1) &&
+            cp /usr/lib/modules/$rel/vmlinuz /out/vmlinuz && echo "$rel" >/out/release &&
+            pacman -Q linux-lts >/out/package'
+          cat archk/release archk/package
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlin-kernel-build
+          path: artifact
+      - name: Build the benchmark and initramfs
+        run: |
+          set -eu
+          mkdir -p build/perf/payload
+          gcc -O2 -Wall -Wextra -static -o build/perf/payload/xlin-bench tests/perf/xlin-bench.c
+          tests/kselftest/mk-initramfs.sh build/perf/initramfs.cpio.zst tests/perf/init build/perf/payload
+      - name: Run (Xlin, Arch, Xlin, Arch, Xlin, Arch; identical VM, host and command line)
+        run: |
+          set -o pipefail
+          mkdir -p build/perf/logs
+          for round in 1 2 3; do
+            for k in xlin arch; do
+              img=artifact/report/bzImage; [ $k = arch ] && img=archk/vmlinuz
+              timeout 300 ./scripts/xlin-run --kernel "$img" --initramfs build/perf/initramfs.cpio.zst --no-enforce-modules \
+                --smp 2 --memory 1024 --append "loglevel=3 mitigations=auto" 2>&1 | tee build/perf/logs/$k-$round.log || true
+            done
+          done
+      - name: Medians
+        if: always()
+        run: python3 tests/perf/summarize.py build/perf/logs | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xlin-perf
+          path: build/perf/logs/
+          retention-days: 30
