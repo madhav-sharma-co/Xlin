@@ -80,14 +80,14 @@ The kernel compiles with this configuration (see [BUILD.md](BUILD.md)). It boots
 
 | Decision | Current state | Why open |
 |---|---|---|
-| Enforce module signatures (`MODULE_SIG_FORCE`) | Signing on, enforcement **off** | Needs a key-management and reproducible-build decision: today the signing key would be generated per build, so builds are not byte-reproducible |
+| Enforce module signatures (`MODULE_SIG_FORCE`) | Decided for v1.0.0: signing on, config does not force it; `xlin-run` enforces via `module.sig_enforce=1` (tested) | The production signing key is the maintainer's later task |
 | BTF / `DEBUG_INFO_BTF` | Off | Needs `pahole` in the build environment; wanted for BPF tooling |
 | Wi-Fi, Bluetooth, sound, laptop extras (touchpad, backlight, suspend) | Not configured | Outside the terminal-only baseline; cannot be tested without hardware |
 | Built-in vs module for storage and network drivers | Built in (see Arch section) | Revisit with measured image size and a QEMU/hardware boot matrix |
 | `LEGACY_VSYSCALL_NONE` | Set | Breaks very old static binaries (glibc before 2.14). Re-check once Windows-application compatibility software is chosen |
-| Lockdown mode | LSM present, mode `none` | Enforcing lockdown interacts with unsigned modules and hibernation; needs the signature decision first |
+| Lockdown mode | LSM present, mode `none` (documented development configuration) | Enforcing lockdown interacts with unsigned modules and hibernation |
 | Secure Boot and measured boot | TPM drivers only | Needs the bootloader decision (Xlin Boot or existing) |
-| Reproducible builds | Not addressed | Depends on the signing key and build environment decisions |
+| Reproducible builds | Done: identical with a fixed key (`xlin-repro.yml`) | A release key flows in through `--signing-key` |
 
 ## Licensing
 

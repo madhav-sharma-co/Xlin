@@ -9,6 +9,24 @@ All notable changes to Xlin are recorded here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+## [1.0.0]
+
+Xlin Kernel v1.0.0: a development kernel for QEMU + OVMF (the foundation for XlinOS). Not validated on physical hardware; not production-ready.
+
+### Added
+- Reproducible build (`scripts/xlin-build --signing-key`, deterministic modules tarball, reproducibility manifest) and the "Reproducible build" workflow: two independent builds with a fixed key give identical bzImage, System.map, config, modules and vmlinux.
+- Release packaging (`scripts/xlin-package`): kernel, signed modules, config, System.map, minimal initramfs, `xlin-run`, SOURCE-PIN, SBOM, SHA256SUMS and a reproducibility manifest; `scripts/xlin-dev-key` for development keys (never a release key).
+- `scripts/xlin-run`: QEMU + OVMF launcher with module-signature enforcement by default and ext4 root-disk boot.
+- `modules-enforce` runtime scenario, upstream kselftest coverage (60 programs, gated against `tests/kselftest/expected.txt`) and informational performance micro-benchmarks against Arch `linux-lts`.
+- `docs/XLINOS-DEVELOPMENT.md`, `docs/FEATURES.md`, release notes, readiness report, checklist and physical test plan; CONTRIBUTING.md and SECURITY.md; release workflow.
+
+### Changed
+- Hardened runtime validation tests (PR #7) and reconciled the release documents with the final implementation. README rewritten.
+- Decisions recorded: module loading and `MODULE_SIG_FORCE` unchanged (enforcement tested and applied by `xlin-run`), lockdown mode `none` for development, `CONFIG_SECURITYFS` unset, pin kept at 6.18.64.
+
+### Known findings
+- W-X-CPA-ITS: EXPLAINED-UPSTREAM. XTILE-CPUID: EXPLAINED-OPEN. Both are reported on every affected boot.
+
 ### Added
 
 - Added SMP/CPU-hotplug, timer, memory-management and deliberate panic/recovery QEMU runtime scenarios. Hardened guest helper failure handling and made panic recovery verify its scratch-disk marker before and after reboot. Added exFAT image creation and runtime filesystem coverage where CI can mount the image; QEMU-only evidence, not bare-metal validation.
