@@ -30,9 +30,12 @@ This describes what exists today and what is planned. Planned parts are marked a
 | Xlin Fetch (`scripts/xlin-fetch`) | Retrieves exactly that source into an ignored directory | **Implemented** |
 | Xlin Verify (`scripts/xlin-verify`) | Proves identity (and, where possible, provenance) of the retrieved source | **Implemented** |
 | Source verification CI | Runs fetch and verify on the real source | **Implemented** (see the workflow) |
-| Xlin Kernel source configuration | Kernel configuration fragments | Planned |
-| Xlin patches | Reviewed changes on top of upstream, kept as separate patch files | Planned |
-| Build, packaging, QEMU tests | Build the kernel, package it for XlinOS, boot-test it | Planned |
+| Xlin Kernel configuration (`config/x86_64`) | Kernel configuration fragment, checked against real Kconfig | **Implemented** |
+| Xlin Build (`scripts/xlin-build`) | Reproducible build of the pinned source | **Implemented** |
+| Xlin Package and Run (`scripts/xlin-package`, `scripts/xlin-run`) | Release package and QEMU + OVMF launcher | **Implemented** |
+| Validation (`tests/`, CI) | Boot, runtime scenarios, kselftest, performance, reproducibility | **Implemented** (QEMU only) |
+| Xlin patches | Reviewed changes on top of upstream, kept as separate patch files | Planned (none needed so far) |
+| Physical hardware validation | First laptop test | Planned |
 
 ## Data flow (current)
 
