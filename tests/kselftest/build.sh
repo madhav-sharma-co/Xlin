@@ -49,6 +49,8 @@ for t in "$@"; do
 done
 # libgcc_s is loaded with dlopen by pthread_cancel and does not show up in ldd
 gcc -print-file-name=libgcc_s.so.1 >>"$libs"
+# libnuma is needed by futex_numa_mpol, which is not on the program list when ldd is run
+for n in /usr/lib/x86_64-linux-gnu/libnuma.so.1 /lib/x86_64-linux-gnu/libnuma.so.1; do [ -f "$n" ] && echo "$n" >>"$libs"; done
 mkdir -p "$out/payload/lib/flat" "$out/payload/lib/lib64"
 sort -u "$libs" | while read -r l; do
 	[ -f "$l" ] || continue
