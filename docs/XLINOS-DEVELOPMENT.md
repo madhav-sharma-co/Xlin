@@ -15,7 +15,7 @@ Either download the CI artifact `xlin-release-candidate` (a `xlin-<release>.tar.
 git clone https://github.com/madhav-sharma-co/Xlin && cd Xlin
 sudo apt-get install build-essential flex bison bc libelf-dev libssl-dev zstd kmod file time \
                      qemu-system-x86 ovmf busybox-static          # or the Arch equivalents
-./scripts/xlin-fetch && ./scripts/xlin-verify --strict            # pinned Linux 6.18.64, verified
+./scripts/xlin-fetch && ./scripts/xlin-verify --strict            # pinned 6.18.64 base, verified
 ./scripts/xlin-dev-key dev-key.pem                                # DEVELOPMENT signing key, never a release key
 ./scripts/xlin-build --out "$PWD/build/xlin-x86_64" --signing-key "$PWD/dev-key.pem"
 ./scripts/xlin-initramfs --out build/minimal.cpio.zst
@@ -54,7 +54,7 @@ tar --zstd -xf modules-6.18.64-xlin.tar.zst -C rootdir          # puts lib/modul
 * **Console:** serial `ttyS0`; add `--graphic` for a window (simple framebuffer/VGA console).
 * **Not configured yet:** Wi-Fi, Bluetooth, sound, laptop power management, BPF/BTF tooling. Add them through the normal configuration-change process with evidence.
 * **Open findings:** two kernel messages appear in logs by design and are documented rather than hidden (see `RELEASE-NOTES.md`).
-* The kernel pin is Linux 6.18.64. Do not update it as part of XlinOS work.
+* The kernel base pin is 6.18.64. Do not update it as part of XlinOS work.
 
 ## 5. Where to look
 

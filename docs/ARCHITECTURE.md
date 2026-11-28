@@ -10,13 +10,13 @@ This describes what exists today and what is planned. Planned parts are marked a
 ## Project family
 
 - **Axion Co.**: parent technology company.
-- **Xlin**: this downstream Linux kernel project.
+- **Xlin**: this kernel project.
 - **XlinOS**: the operating system built around Xlin.
 - **Xlin Boot**: a possible future bootloader (not part of Xlin Kernel 0.1).
 
 ## Principles
 
-1. Xlin is based on upstream Linux. It does not rewrite the kernel.
+1. Xlin is built on an upstream kernel base. It does not rewrite the kernel.
 2. Upstream is never edited in place. Xlin's own work lives in separate, reviewable files (configuration, patches, packaging).
 3. Upstream history, copyright and licences are preserved; the origin of the source is always stated.
 4. Everything is reproducible: the exact source is pinned by full commit hash and verified.
