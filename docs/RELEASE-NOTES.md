@@ -8,7 +8,7 @@ SPDX-License-Identifier: CC-BY-4.0
 **Scope: Xlin v1.0.0 is a kernel for development in QEMU + OVMF virtual machines (the foundation for XlinOS). It has not been run on physical hardware and is not declared production-ready.** Physical-hardware validation is the remaining external limitation (docs/PHYSICAL-TEST-PLAN.md).
 
 ## What it is
-Linux 6.18.64 (pinned commit `fd7cfd39c88596fec816639ad83cbf3e9d316372`, unmodified) built with the approved Xlin x86_64 UEFI configuration (`config/x86_64/xlin_defconfig`). Kernel release string: `6.18.64-xlin`. There are no Xlin-specific kernel source patches.
+Xlin is built on the upstream 6.18.64 kernel base (pinned commit `fd7cfd39c88596fec816639ad83cbf3e9d316372`, unmodified) built with the approved Xlin x86_64 UEFI configuration (`config/x86_64/xlin_defconfig`). Kernel release string: `6.18.64-xlin`. There are no Xlin-specific kernel source patches.
 
 ## What was verified (QEMU + OVMF, CI)
 Source pin; configuration against real Kconfig; build; UEFI boot; runtime matrix (vCPUs x memory); storage and filesystems; virtual networking; modules (signed; enforcement scenario); hardening probes; SMP and CPU hotplug; timers; memory management; stress; warm reboot; kernel panic and automatic recovery; upstream kselftests (results in the CI summary); performance micro-benchmarks (informational, versus Arch linux-lts); reproducible build (two independent builds compared byte for byte when built with a fixed signing key); package verification (fresh unpack, checksums, boot through the package launcher, ext4 root disk). See docs/RELEASE-READINESS.md for the classification of what passed, what passed only in simulation, what is unsupported and what needs hardware.
