@@ -3,6 +3,10 @@ SPDX-FileCopyrightText: 2026 Axion Co.
 SPDX-License-Identifier: CC-BY-4.0
 -->
 
+<p align="center">
+  <img src="docs/assets/xlin-logo.png" alt="Xlin" width="520">
+</p>
+
 # Xlin v1.0.0
 
 **Xlin is a 64-bit kernel developed by Axion Co. for the Xlin operating system.**

@@ -95,3 +95,7 @@ Any third-party file added later is listed here with its origin, version, licenc
 
 - Legal review of the licence choices before the first release.
 - Whether to check SPDX headers automatically in CI (for example with the REUSE tool).
+
+## Logo
+
+`docs/assets/xlin-logo.png` is the Xlin logo, provided by the maintainer. It is a trademark asset of Axion Co. and is not licensed under CC-BY-4.0 or any open licence; do not reuse it without permission.
