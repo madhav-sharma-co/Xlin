@@ -3,6 +3,10 @@ SPDX-FileCopyrightText: 2026 Axion Co.
 SPDX-License-Identifier: CC-BY-4.0
 -->
 
+<p align="center">
+  <img src="docs/assets/xlin-logo.png" alt="Xlin" width="520">
+</p>
+
 # Xlin
 
 **Xlin** is the kernel of [XlinOS](https://github.com/madhav-sharma-co/XlinOS), by Axion Co. It grows from the Linux kernel the way Linux grew from Unix: a new kernel with its own identity, configuration, build, packaging and validation, standing on proven foundations.
