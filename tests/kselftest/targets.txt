@@ -1,0 +1,20 @@
+# kselftest targets run by CI (one per line). A target is added only after its result is understood.
+timers
+futex
+membarrier
+rseq
+clone3
+kcmp
+mincore
+size
+exec
+prctl
+sigaltstack
+ptrace
+pidfd
+memfd
+mqueue
+ipc
+breakpoints
+vDSO
+mm

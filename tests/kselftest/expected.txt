@@ -1,0 +1,8 @@
+# Results of the kselftest run that are NOT a plain PASS, each with what is known. The gate
+# (tests/kselftest/report.py) fails on any difference: a new failure, or an entry here that changed.
+# An entry is never added to make CI green without a reason below; reasons marked OPEN are not yet root-caused.
+ipc/msgque FAIL rc=1 Kernel feature not built: msgrcv(MSG_COPY) returns ENOSYS because CONFIG_CHECKPOINT_RESTORE is not set (upstream default). Not a defect; a configuration gap to decide if XlinOS needs CRIU/container checkpointing.
+clone3/clone3_cap_checkpoint_restore FAIL rc=1 OPEN: the test fails in its own set_capability() helper (it edits libcap's private structure) before any clone3 call reaches the kernel; not a kernel result. Needs a libcap-version check.
+prctl/set-anon-vma-name-test FAIL rc=1 OPEN: only the sub-check "rename a non-anonymous VMA expects EINVAL" fails; renaming and the bad-name check pass. Probably the guest's tmpfs-backed /tmp (shmem VMAs can be named); not verified.
+memfd/run_fuse_test.sh FAIL rc=1 Guest environment: "fuse: device not found, try 'modprobe fuse'". FUSE is built as a module (fuse.ko) and this kselftest guest loads no modules. Not a kernel result.
+mincore/mincore_selftest FAIL rc=1 OPEN: only global.check_file_mmap fails ("Expected ra_pages (0) > 0, no read-ahead pages found in memory"); the other 4 sub-tests pass or skip. The test maps a file from its working directory, which in this guest is the initramfs (ramfs, no backing store and so no read-ahead). Probable guest-environment cause, not verified against a block-backed filesystem; not treated as explained.

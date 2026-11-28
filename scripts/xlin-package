@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Axion Co.
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Xlin Package: assemble the release package from a finished build (scripts/xlin-build report
+# directory). Nothing is rebuilt and nothing is signed unless --sign is given: signing is done
+# by the maintainer with the production key, never in CI.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+usage() {
+	cat <<'USAGE'
+Usage: scripts/xlin-package --report DIR --out DIR [--initramfs FILE] [--version NAME] [--sign KEYID]
+
+  --report DIR      the build's report/ directory (bzImage, System.map, config-final, modules-*.tar.zst)
+  --out DIR         package directory to create (must not exist)
+  --initramfs FILE  minimal initramfs to include (scripts/xlin-initramfs output)
+  --version NAME    package name (default: xlin-<kernel release>)
+  --sign KEYID      also create SHA256SUMS.sig with gpg --detach-sign by this key (maintainer use)
+USAGE
+}
+report=""; out=""; initrd=""; name=""; sign=""
+while [ $# -gt 0 ]; do
+	case $1 in
+	--report) report=$2; shift 2 ;; --out) out=$2; shift 2 ;; --initramfs) initrd=$2; shift 2 ;;
+	--version) name=$2; shift 2 ;; --sign) sign=$2; shift 2 ;;
+	-h | --help) usage; exit 0 ;; *) usage >&2; exit 2 ;;
+	esac
+done
+die() { echo "error: $*" >&2; exit 2; }
+if [ -z "$report" ] || [ -z "$out" ]; then usage >&2; exit 2; fi
+for f in bzImage System.map config-final build-report.env; do [ -s "$report/$f" ] || die "$report/$f missing"; done
+renv() { sed -n "s/^$1=//p" "$report/build-report.env" | head -n1; }
+rel=$(renv kernel_release); [ -n "$rel" ] || die "no kernel_release in build-report.env"
+mods=("$report"/modules-*.tar.zst); [ -s "${mods[0]}" ] || die "modules tarball missing"
+out=$(realpath -m "$out"); report=$(realpath "$report"); [ -z "$initrd" ] || initrd=$(realpath "$initrd")
+[ ! -e "$out" ] || die "$out exists"
+name=${name:-xlin-$rel}
+d="$out/$name"; mkdir -p "$d"
+cp "$report/bzImage" "$d/vmlinuz-xlin-$rel"
+cp "$report/System.map" "$d/System.map-$rel"
+cp "$report/config-final" "$d/config-$rel"
+cp "${mods[0]}" "$d/modules-$rel.tar.zst"
+[ -z "$initrd" ] || { [ -s "$initrd" ] || die "initramfs $initrd missing"; cp "$initrd" "$d/initramfs-minimal.cpio.zst"; }
+[ ! -f "$report/repro-manifest.txt" ] || cp "$report/repro-manifest.txt" "$d/REPRODUCIBILITY-MANIFEST.txt"
+cp "$ROOT/scripts/xlin-run" "$d/xlin-run"
+cp "$ROOT/docs/XLINOS-DEVELOPMENT.md" "$d/XLINOS-DEVELOPMENT.md"
+[ ! -f "$ROOT/docs/RELEASE-NOTES.md" ] || cp "$ROOT/docs/RELEASE-NOTES.md" "$d/RELEASE-NOTES.md"
+cp "$ROOT/LICENSES/GPL-2.0-only.txt" "$d/" 2>/dev/null || true
+
+commit=$(sed -n 's/^source_commit=//p' "$report/build-report.env" | head -n1)
+[ -n "$commit" ] || commit=$(grep -o '[0-9a-f]\{40\}' "$ROOT/upstream/UPSTREAM.lock" | head -n1)
+xlin_commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
+cfg_sha=$(sha256sum "$d/config-$rel" | cut -d' ' -f1)
+{
+	echo "xlin_kernel_release=$rel"
+	echo "xlin_repository_commit=$xlin_commit"
+	echo "upstream=Linux ${rel%-xlin}"
+	echo "upstream_commit=$commit"
+	echo "config_sha256=$cfg_sha"
+	echo "compiler=$(renv gcc)"
+	echo "module_signing_key=$(renv signing_key)"
+	echo "validated_in=QEMU+OVMF only; no physical-hardware test has been run"
+} >"$d/SOURCE-PIN.txt"
+python3 - "$d" "$rel" "$commit" "$cfg_sha" "$xlin_commit" <<'PY'
+import json, sys, hashlib, os, datetime
+d, rel, commit, cfg, xc = sys.argv[1:6]
+k = "vmlinuz-xlin-" + rel
+h = hashlib.sha256(open(os.path.join(d, k), "rb").read()).hexdigest()
+doc = {"spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "SPDXID": "SPDXRef-DOCUMENT",
+       "name": "xlin-" + rel, "documentNamespace": "https://github.com/madhav-sharma-co/Xlin/sbom/" + xc,
+       "creationInfo": {"created": "1970-01-01T00:00:00Z", "creators": ["Tool: scripts/xlin-package"]},
+       "packages": [
+         {"SPDXID": "SPDXRef-Kernel", "name": "xlin-kernel", "versionInfo": rel, "downloadLocation": "NOASSERTION",
+          "licenseConcluded": "GPL-2.0-only WITH Linux-syscall-note", "checksums": [{"algorithm": "SHA256", "checksumValue": h}],
+          "comment": "Built from the packages below with config sha256 " + cfg},
+         {"SPDXID": "SPDXRef-Linux", "name": "linux", "versionInfo": rel.replace("-xlin", ""), "downloadLocation": "git+https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git@" + commit,
+          "licenseConcluded": "GPL-2.0-only WITH Linux-syscall-note", "comment": "pinned upstream source commit " + commit}],
+       "relationships": [{"spdxElementId": "SPDXRef-Kernel", "relationshipType": "GENERATED_FROM", "relatedSpdxElement": "SPDXRef-Linux"}]}
+json.dump(doc, open(os.path.join(d, "SBOM.spdx.json"), "w"), indent=1)
+PY
+( cd "$d" && find . -type f | LC_ALL=C sort | sed 's#^\./##' | xargs sha256sum >"$out/.sums" ) && mv "$out/.sums" "$d/SHA256SUMS"
+if [ -n "$sign" ]; then gpg --batch --local-user "$sign" --detach-sign --armor -o "$d/SHA256SUMS.sig" "$d/SHA256SUMS"; echo "signed with $sign"; else echo "not signed (no --sign): the maintainer signs SHA256SUMS with the production key"; fi
+tar -C "$out" --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf - "$name" | zstd -q -T1 -19 -o "$out/$name.tar.zst"
+( cd "$out" && sha256sum "$name.tar.zst" >"$name.tar.zst.sha256" )
+echo "package: $d"; echo "archive: $out/$name.tar.zst"; cat "$d/SHA256SUMS"

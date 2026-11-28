@@ -3,7 +3,9 @@ SPDX-FileCopyrightText: 2026 Axion Co.
 SPDX-License-Identifier: CC-BY-4.0
 -->
 
-# Xlin v1.0.0 packaging plan (proposal, not implemented)
+# Xlin v1.0.0 packaging (implemented)
+
+Implemented by `scripts/xlin-package` and the CI `package` job. The package is `xlin-<release>.tar.zst` with the files below plus `initramfs-minimal.cpio.zst`, `xlin-run`, `XLINOS-DEVELOPMENT.md`, `REPRODUCIBILITY-MANIFEST.txt`; `vmlinux` is hashed in the manifest but not shipped. CI packages are unsigned (`SHA256SUMS.sig` appears only with `--sign KEYID`, after the maintainer creates the release key). Arch PKGBUILDs remain a later XlinOS-side phase.
 
 Goal: a release that XlinOS (Arch-based) can consume as its kernel, built only by the existing pinned CI build.
 
