@@ -119,6 +119,7 @@ FS_TABLE = [
     ("fs-btrfs", "btrfs", "rw", "BTRFS_FS"),
     ("fs-xfs", "xfs", "rw", "XFS_FS"),
     ("fs-ntfs", "ntfs3", "ro", "NTFS3_FS"),
+    ("fs-exfat", "exfat", "rw", "EXFAT_FS"),
 ]
 MATRIX_KVM = [(1, 256), (1, 1024), (2, 512), (2, 1024), (4, 1024), (4, 4096), (8, 2048)]
 MATRIX_TCG = [(1, 512), (2, 1024), (4, 1024)]
@@ -319,9 +320,14 @@ def evaluate(r, sc, ctx, text, expect):
         r["expected_panics"] = crashes
         crit("the deliberate panic happened exactly once", crashes == 1, f"{crashes} 'sysrq triggered crash' panic(s) in the log")
         crit("no other panic, oops or BUG", not other, "; ".join(other[:3]) or "none seen")
-        crit("the VM rebooted itself after the panic (panic=-1)", len(re.findall(r"^XLIN-PANIC: boot ", text, re.M)) == 2,
-             f"{len(re.findall(r'^XLIN-PANIC: boot ', text, re.M))} boot banners (expected 2)")
-        crit("recovery boot reached user space", any(t[0] == "panic" and t[1] == "recovered" and t[2] == "PASS" for t in tests), "XLIN-TEST: panic recovered")
+        boot1 = len(re.findall(r"^XLIN-PANIC: boot 1 of 2 ", text, re.M))
+        boot2 = len(re.findall(r"^XLIN-PANIC: boot 2 of 2 ", text, re.M))
+        crit("the VM rebooted itself after the panic (panic=-1)", boot1 == 1 and boot2 == 1,
+             f"boot-1 banners={boot1}, boot-2 banners={boot2} (expected exactly one each)")
+        crit("recovery boot reached user space and cleared its marker",
+             any(t[0] == "panic" and t[1] == "recovered" and t[2] == "PASS" for t in tests) and
+             not any(t[0] == "panic" and t[1].startswith("marker-") and t[2] in ("FAIL", "SKIP") for t in tests),
+             "XLIN-TEST: panic recovered and marker clear verified")
         panic = None
     crit("kernel started with the expected release", rel == expect, f"log says {rel!r}, expected {expect!r}")
     crit("booted through UEFI (OVMF)", "efi: EFI v" in text, "kernel log 'efi: EFI v...'")

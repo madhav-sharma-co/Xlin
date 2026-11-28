@@ -13,24 +13,33 @@ while [ "$i" -lt "$cpus" ]; do
 	pids="$pids $!"
 	i=$((i + 1))
 done
-mkdir -p /mnt/s && mount -t tmpfs -o size=96m tmpfs /mnt/s
-( j=0; while [ "$j" -lt 6 ]; do dd if=/dev/urandom of=/mnt/s/f$j bs=1k count=4096 2>/dev/null; j=$((j + 1)); done; sync ) &
+mkdir -p /mnt/s && mount -t tmpfs -o size=96m tmpfs /mnt/s || { fail tmpfs-mount "cannot mount the 96 MiB stress filesystem"; exit 0; }
+( j=0; while [ "$j" -lt 6 ]; do
+	dd if=/dev/urandom of=/mnt/s/f$j bs=1k count=4096 2>/dev/null || exit 1
+	sha256sum /mnt/s/f$j | cut -d' ' -f1 >"/mnt/s/f$j.sha256" || exit 1
+	j=$((j + 1))
+done; sync ) &
 pids="$pids $!"
-k=0
 fork_ok=0
 t_end=$(($(cut -d. -f1 /proc/uptime) + dur))
 while [ "$(cut -d. -f1 /proc/uptime)" -lt "$t_end" ]; do
 	n=0
 	while [ "$n" -lt 40 ]; do ( : ) & n=$((n + 1)); done
-	wait_pids=$(jobs -p | wc -l)
 	fork_ok=$((fork_ok + 1))
 	sleep 1
 done
 for p in $pids; do kill "$p" 2>/dev/null; done
 wait 2>/dev/null
-sum=$(cat /mnt/s/f0 | sha256sum | cut -d' ' -f1)
-[ -n "$sum" ] && pass io-readback "tmpfs file readable after stress" || fail io-readback "tmpfs read failed"
-umount /mnt/s 2>/dev/null
+io_ok=1
+j=0
+while [ "$j" -lt 6 ]; do
+	expected=$(cat "/mnt/s/f$j.sha256" 2>/dev/null)
+	actual=$(sha256sum "/mnt/s/f$j" 2>/dev/null | cut -d' ' -f1)
+	[ -n "$expected" ] && [ "$expected" = "$actual" ] || io_ok=0
+	j=$((j + 1))
+done
+[ "$io_ok" -eq 1 ] && pass io-readback "six 4 MiB tmpfs files match their recorded SHA-256 checksums after stress" || fail io-readback "one or more tmpfs files were missing, incomplete or changed"
+umount /mnt/s && pass tmpfs-unmount "stress filesystem unmounted cleanly" || fail tmpfs-unmount "could not unmount stress filesystem"
 pass stress-ran "${dur}s of CPU burn on $cpus CPUs, memory fill and fork storm ($fork_ok rounds)"
 dmesg | sed -n "$((before + 1)),\$p" >/tmp/newlog
 if grep -qE 'BUG:|Oops|WARNING:|Call Trace|soft lockup|hung task|rcu.*stall' /tmp/newlog; then fail log-after-stress "$(grep -E 'BUG:|Oops|WARNING:|Call Trace|soft lockup|hung task|rcu.*stall' /tmp/newlog | head -n 3 | tr '\n' ' ')"

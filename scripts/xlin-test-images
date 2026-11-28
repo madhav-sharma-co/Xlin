@@ -5,9 +5,9 @@
 # Xlin Test Images: build the small disk images used by the runtime validation (Step 6).
 #
 # Every image is a whole-device filesystem (no partition table) holding XLIN-DISK-ID and, for
-# the filesystem images, XLIN-FS-TEST. No root privileges are used: images are populated by
-# the mkfs tools themselves (mke2fs -d, mksquashfs, mkfs.btrfs --rootdir, mkfs.xfs -p,
-# genisoimage, mcopy, ntfscp). A filesystem whose image cannot be built is recorded in
+# the filesystem images, XLIN-FS-TEST. Images are populated by filesystem-specific tools;
+# exFAT uses a temporary loop mount when sudo and kernel exFAT support are available.
+# A filesystem whose image cannot be built is recorded in
 # images.txt as "not-built <name> <reason>"; the runtime test then reports it as NOT TESTED
 # instead of skipping it silently.
 #
@@ -151,7 +151,7 @@ else
 fi
 
 # ---- filesystem images ---------------------------------------------------------------------
-for t in ext4 vfat squashfs iso9660 udf btrfs xfs ntfs; do content "$work/fs-$t" "fs-$t" "xlin-fs-ok-$t"; done
+for t in ext4 vfat squashfs iso9660 udf btrfs xfs ntfs exfat; do content "$work/fs-$t" "fs-$t" "xlin-fs-ok-$t"; done
 # ntfs is mounted with -t ntfs3 by the guest; its test file records the name "ntfs3"
 printf '%s' xlin-fs-ok-ntfs3 >"$work/fs-ntfs/XLIN-FS-TEST"
 
@@ -195,6 +195,25 @@ build_ntfs() {
 	ntfscp -f "$out/fs-ntfs.img" "$work/fs-ntfs/XLIN-DISK-ID" XLIN-DISK-ID
 	ntfscp -f "$out/fs-ntfs.img" "$work/fs-ntfs/XLIN-FS-TEST" XLIN-FS-TEST
 }
+build_exfat() {
+	if ! want mkfs.exfat || ! want sudo || ! want mount || ! want umount; then
+		echo "needs exfatprogs, sudo and mount/umount"
+		return 1
+	fi
+	rm -f "$out/fs-exfat.img"
+	truncate -s 64M "$out/fs-exfat.img"
+	mkfs.exfat -L XLINTEST "$out/fs-exfat.img" >/dev/null
+	local mnt="$work/exfat-mnt" rc=0
+	mkdir -p "$mnt"
+	if ! sudo mount -o loop "$out/fs-exfat.img" "$mnt"; then
+		echo "the runner could not loop-mount the exFAT image"
+		return 1
+	fi
+	sudo cp "$work/fs-exfat/XLIN-DISK-ID" "$work/fs-exfat/XLIN-FS-TEST" "$mnt/" || rc=1
+	sync
+	sudo umount "$mnt" || rc=1
+	return "$rc"
+}
 try_build fs-ext4 build_ext4
 try_build fs-vfat build_vfat
 try_build fs-squashfs build_squashfs
@@ -203,10 +222,9 @@ try_build fs-udf build_iso udf -udf
 try_build fs-btrfs build_btrfs
 try_build fs-xfs build_xfs
 try_build fs-ntfs build_ntfs
-# exFAT: mkfs.exfat cannot populate an image without mounting it (needs root): not built
-note "not-built fs-exfat no unprivileged tool can put files into an exFAT image (mounting needs root)"
+try_build fs-exfat build_exfat
 {
-	for t in mke2fs mkfs.vfat mcopy mksquashfs genisoimage xorrisofs mkfs.btrfs mkfs.xfs mkntfs; do
+	for t in mke2fs mkfs.vfat mcopy mksquashfs genisoimage xorrisofs mkfs.btrfs mkfs.xfs mkntfs mkfs.exfat; do
 		if want "$t"; then echo "tool $t $( { "$t" --version 2>&1 || "$t" -V 2>&1; } | head -n1 || true)"; fi
 	done
 } >>"$out/images.txt" 2>/dev/null || true

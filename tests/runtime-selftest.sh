@@ -28,7 +28,7 @@ echo c >"$T/CODE.fd"; echo v >"$T/VARS.fd"
 mkdir "$T/images"
 printf 'built ext4 1\nbuilt modules 1\nbuilt scratch 1\nnot-built fs-xfs needs xfsprogs\n' >"$T/images/images.txt"
 for i in ext4 modules scratch; do echo x >"$T/images/$i.img"; done
-printf 'CONFIG_IKCONFIG_PROC=y\nCONFIG_VIRTIO_BLK=y\nCONFIG_EXT4_FS=y\n' >"$T/config-final"
+printf 'CONFIG_IKCONFIG_PROC=y\nCONFIG_VIRTIO_BLK=y\nCONFIG_MAGIC_SYSRQ=y\nCONFIG_EXT4_FS=y\n' >"$T/config-final"
 SHA=$(sha256sum "$T/config-final" | cut -d' ' -f1)
 
 REL=$(sed -n 's/^source.version=//p' "$ROOT/upstream/UPSTREAM.lock")-xlin
@@ -70,6 +70,19 @@ run() { # EXPECTED_EXIT NAME [runner args...]  (uses $FAKE_LOG)
 export FAKE_LOG="$T/log"
 good_log config hardening systemd measure logscan >"$FAKE_LOG"
 run 0 "a complete good guest log passes" --scenarios base
+
+# Panic/recovery is judged from two distinct guest boots, one deliberate panic, and a verified marker.
+good_log config logscan >"$FAKE_LOG"
+sed -i '/efi: EFI v2.7/a XLIN-PANIC: boot 1 of 2 uptime=1.0: deliberate panic\nKernel panic - not syncing: sysrq triggered crash\nXLIN-PANIC: boot 2 of 2 uptime=0.1: recovered\nXLIN-TEST: panic recovered PASS marker was cleared and recovery boot reached userspace' "$FAKE_LOG"
+run 0 "a deliberate panic followed by a marker-verified recovery boot passes" --scenarios panic-recovery
+
+good_log config logscan >"$FAKE_LOG"
+sed -i '/efi: EFI v2.7/a XLIN-PANIC: boot 1 of 2 uptime=1.0: deliberate panic\nKernel panic - not syncing: sysrq triggered crash\nXLIN-TEST: panic recovered PASS marker was cleared and recovery boot reached userspace' "$FAKE_LOG"
+run 1 "panic recovery without the second boot banner fails" --scenarios panic-recovery
+
+good_log config logscan >"$FAKE_LOG"
+sed -i '/efi: EFI v2.7/a XLIN-PANIC: boot 1 of 2 uptime=1.0: deliberate panic\nKernel panic - not syncing: sysrq triggered crash\nXLIN-PANIC: boot 2 of 2 uptime=0.1: recovered\nXLIN-TEST: panic marker-clear-verify FAIL marker remains set' "$FAKE_LOG"
+run 1 "panic recovery with an uncleared scratch marker fails" --scenarios panic-recovery
 
 good_log config hardening systemd measure logscan | sed 's/^XLIN-TEST: hardening something PASS fine/XLIN-TEST: hardening kaslr FAIL text at link address/' >"$FAKE_LOG"
 run 1 "a FAILED check fails the run" --scenarios base
