@@ -5,9 +5,9 @@ SPDX-License-Identifier: CC-BY-4.0
 
 # Xlin Kernel v1.0.0 release-readiness report
 
-**Verdict: NOT READY for v1.0.0.** Xlin Kernel is a validated build-and-boot candidate in QEMU + OVMF. It has never run on physical hardware, has no packaging, no release signing and no security-update process. Nothing here declares production readiness.
+**Verdict: READY as Xlin v1.0.0 for development in QEMU + OVMF (the foundation for XlinOS). NOT production-ready, and NOT validated on physical hardware.** The kernel builds reproducibly, boots under OVMF, passes the automated validation described below and ships as a verified package with a launcher. It has never run on physical hardware, has no production release-signing key (the maintainer creates it later) and no security-update process. Physical-hardware validation is the remaining external limitation.
 
-Written 2026-11-26 against the pinned Linux 6.18.64 (`fd7cfd39c88596fec816639ad83cbf3e9d316372`), `main` at `02cd705` (PR #5 and PR #6 merged by the maintainer on 2026-11-26). PR #7 (maintainer's hardening of the new tests) is open and not assessed here. Every number below comes from a CI run named in the text; QEMU on shared GitHub runners cannot show physical-hardware behaviour.
+Updated 2026-11-28 against the pinned Linux 6.18.64 (`fd7cfd39c88596fec816639ad83cbf3e9d316372`). PR #5, #6, #7 (hardening of the new tests) and #8 are merged; the release-engineering work (reproducible build, package, `xlin-run`, kselftest, performance baseline) is PR #9. Every number below comes from a CI run named in the text; QEMU on shared GitHub runners cannot show physical-hardware behaviour.
 
 ## 1. Test classification
 
@@ -31,6 +31,11 @@ Written 2026-11-26 against the pinned Linux 6.18.64 (`fd7cfd39c88596fec816639ad8
 | Kernel panic and recovery | `panic-recovery` scenario (PR #6): deliberate `sysrq-c` panic, automatic reboot (`panic=-1`), recovery boot completes the base checks |
 | Memory management | `mm` scenario (PR #6): see section 1.5 for its CI result |
 | Software emulation | TCG: 0 of 248 TCG boots across 31 runs showed the XTILE message (docs/RUNTIME-VALIDATION.md) |
+| Upstream kselftests | 60 programs from 14 targets run in the guest: 55 pass, 5 fail; all 5 are classified in `tests/kselftest/expected.txt` and the gate fails on any other change (run `46117009655`). Not built against the pinned headers: exec, sigaltstack, ptrace, mm (reported, not hidden) |
+| Reproducible build | Two independent builds with a fixed development signing key give identical bzImage, System.map, config-final, modules tarball and vmlinux (workflow `xlin-repro.yml`, run `46005861224`; earlier `45928512177`) |
+| Module-signature enforcement | `modules-enforce` scenario (`module.sig_enforce=1`): signed modules load, an unsigned module is refused |
+| Packaging | `package` job: fresh unpack, SHA256SUMS verify, boot through the package's `xlin-run`, ext4 root-disk boot without an initramfs |
+| Performance micro-benchmarks (informational) | Xlin vs Arch linux-lts on the same runner, interleaved (run `45930857708`); no claim of faster or slower is made, see section 5 |
 | Regression baseline | Arch `linux-lts` and QEMU 8 control runs (non-gating comparison) |
 
 ### 1.2 Passed only in simulation
@@ -42,9 +47,6 @@ Written 2026-11-26 against the pinned Linux 6.18.64 (`fd7cfd39c88596fec816639ad8
 
 | Item | Why / what is needed |
 |---|---|
-| Upstream kselftests | Feasible from the pinned tree inside the VM; not run. Largest missing regression suite |
-| Reproducible build | Measured: **not** byte-reproducible (build timestamp, per-build module signing key). Needs the signing-key decision (`MODULE_SIG_FORCE` open decision) before it can be made so |
-| Performance benchmarks | Only boot-timing observations exist in CI logs. No benchmark, no baseline comparison: **no performance claim is supported** |
 | Sanitiser and fuzz builds (KASAN, KCSAN, lockdep, syzkaller) | Would need a separate debug configuration; not built |
 | Secure Boot in OVMF | Needs signing keys and a bootloader decision (Xlin Boot or other) |
 | exFAT | No unprivileged tool can populate an image |
@@ -64,7 +66,8 @@ CI run `45813368893` (head `f6a347d`, merged as `02cd705`): all six jobs passed 
 
 * Pinned, verifiable upstream source; approved x86_64 UEFI configuration (`xlin_defconfig`, a 137-setting fragment over upstream's defconfig).
 * Boots under OVMF to user space; initramfs boot; `/proc/config.gz`.
-* Modules with signing on (not enforced); kmod load/unload.
+* Modules with signing on; enforcement tested via `module.sig_enforce=1` (the `xlin-run` default); kmod load/unload.
+* Reproducible build, release package, `xlin-run` launcher, kselftest and performance baseline (docs/XLINOS-DEVELOPMENT.md).
 * SMP with CPU hotplug; kvm-clock timers; panic and automatic reboot recovery; warm reboots.
 * Virtio, AHCI, NVMe and USB storage; common filesystems; virtual NICs; virtio-rng; virtual graphics (device nodes only).
 * Hardening options enabled and probed (section 4).
@@ -73,7 +76,7 @@ CI run `45813368893` (head `f6a347d`, merged as `02cd705`): all six jobs passed 
 
 * **No Xlin-specific kernel patches**: Xlin is a configuration over upstream. There is no release identity beyond `-xlin` (the planned `-xlin0.1` form is not implemented).
 * Not configured: Wi-Fi, Bluetooth, sound, laptop extras (touchpad, backlight, suspend), BTF/BPF tooling.
-* No packaging, no release signing, no SBOM, no update channel.
+* Packages are unsigned: no production release key exists. The maintainer creates and stores it later; CI never holds one. No update channel.
 * Pin is a single point-in-time release; no documented process for taking upstream stable security updates.
 * Two open runtime findings, both still reported on every affected boot and neither allowlisted:
   * **W-X-CPA-ITS** (EXPLAINED-UPSTREAM): `CPA detected W^X violation` during early ITS-mitigation setup; seen in 578 of 578 boots on the Xeon 6975P-C hosts and no others. Upstream analysis kept the message. No report was sent upstream.
@@ -86,31 +89,44 @@ CI run `45813368893` (head `f6a347d`, merged as `02cd705`): all six jobs passed 
 |---|---|
 | Source authenticity | Source identity verified against the pin; authenticated provenance (signature) is reported separately and is limited as documented in SOURCE-MANAGEMENT.md |
 | KASLR, stack protector, FORTIFY, hardened usercopy, VMAP_STACK, slab hardening, init_on_alloc, no vsyscall, Yama, Landlock, lockdown LSM present | On; behavioural probes pass where the kernel exposes behaviour |
-| `MODULE_SIG_FORCE` | **Off** (signing on, not enforced): open decision |
-| Lockdown mode | LSM present, mode `none`: open decision |
-| `CONFIG_SECURITYFS` | Not set: `/sys/kernel/security` absent; two probes reported UNSUPPORTED. Maintainer decision pending |
+| `MODULE_SIG_FORCE` | Off in the config by decision; enforcement is tested and set on the command line by `xlin-run` (`module.sig_enforce=1`) |
+| Lockdown mode | LSM present, mode `none`: documented development configuration for QEMU/OVMF |
+| `CONFIG_SECURITYFS` | Not set (nothing in the implementation requires it); two probes report UNSUPPORTED |
 | `SHUFFLE_PAGE_ALLOCATOR` | Configured but not active at runtime |
 | Secure Boot / measured boot | Not addressed (needs bootloader decision) |
 | Vulnerability mitigations | Reported by the kernel (`/sys/devices/system/cpu/vulnerabilities` present); effectiveness on real CPUs not assessed |
-| Sanitiser, fuzz and kselftest coverage | None |
+| Sanitiser and fuzz coverage | None; kselftest subset runs (section 1.1) |
 | CVE/security-update process | None |
 
 ## 5. Performance evidence
 
-Size: `bzImage` 12,174,336 bytes; 39 modules, 9,729,035 bytes compressed (docs/CONFIGURATION.md and BUILD.md). Boot timing is recorded per run in the CI logs. **No comparison with any other kernel has been made; no claim of smaller, lighter or faster is supported.** CI timings are noisy.
+Size: `bzImage` 12,174,336 bytes; 39 modules, 9,729,035 bytes compressed. Static micro-benchmarks run in the guest, Xlin versus Arch `linux-lts`, interleaved three rounds on one KVM runner (Xeon 6975P-C), run `45930857708`. Informational only: shared noisy runners, no real hardware.
 
-## 6. Release blockers
+| Metric | Xlin | Arch linux-lts |
+|---|---|---|
+| syscall getppid | 106.98 ns | 105.05 ns |
+| pipe round trip | 1881.98 ns | 1798.92 ns |
+| fork+exit+wait | 26.34 us | 29.58 us |
+| page fault | 1085 ns/page | 460 ns/page |
+| munmap 64 MiB | 1619 us | 1248.73 us |
+| memcpy | 13.15 GB/s | 13.09 GB/s |
+| tmpfs write / read | 5291 / 7629 MiB/s | 4782 / 8960 MiB/s |
+| timer lateness 1 ms, median / p99 | 85.67 / 102.85 us | 75.07 / 106.3 us |
 
-1. No physical-machine test of any kind.
-2. No packaging, release signing, checksums policy or SBOM.
-3. Module-signing/key-management and reproducible-build decisions are open.
-4. No kselftest run and no performance baseline.
-5. No upstream-update (security patch) policy.
-6. XTILE-CPUID is EXPLAINED-OPEN and W-X-CPA-ITS is EXPLAINED-UPSTREAM; both need an explicit release decision (accept and document, or resolve).
-7. Hardware support scope (what "supported" means for a first laptop) is undefined.
-8. Licensing review flagged in LICENSING.md is not recorded as done.
-9. PR #7 (open) must be resolved against the new scenarios.
-10. No tag, release notes, or artifact publication exists; none will be created without approval.
+Xlin's page-fault cost is about 2.4x Arch's here; the cause was not investigated (the two kernels differ in many options). No claim of smaller, lighter or faster is made.
+
+## 6. Remaining items
+
+Not blockers for the v1.0.0 QEMU/OVMF development release:
+
+1. No physical-machine test of any kind (the remaining external limitation).
+2. Production release-signing key: the maintainer creates and stores it later; do not publish packages as signed before then.
+3. Hardware support scope for a first laptop is undefined.
+4. No upstream-update (security patch) policy; the 6.18.64 pin is kept by decision.
+5. XTILE-CPUID stays EXPLAINED-OPEN and W-X-CPA-ITS EXPLAINED-UPSTREAM; both are documented in the release notes and still reported on every affected boot.
+6. kselftest: 5 classified non-passes (2 are guest-environment, 1 is a kernel feature not built, 2 are OPEN and unverified: `clone3_cap_checkpoint_restore`, `set-anon-vma-name-test`; `mincore_selftest` is OPEN and probably the ramfs guest) and 4 targets that do not build against the pinned headers.
+7. Licensing review flagged in LICENSING.md is not recorded as done.
+8. The `v1.0.0` tag and release publication need the maintainer's action.
 
 ## 7. Remaining physical-hardware tests (first laptop)
 
